@@ -15,6 +15,15 @@ export interface FundamentalData {
   roe: number | null; // Return on Equity (decimal, e.g. 0.15 = 15%)
   revenueGrowth: number | null; // YoY revenue growth (decimal)
   debtToEquity: number | null;
+  // Extended fields for fair value + sector comparison
+  sector: string | null;
+  industry: string | null;
+  currentPrice: number | null;
+  trailingEps: number | null;
+  bookValuePerShare: number | null; // currentPrice / priceToBook
+  analystBuy: number;
+  analystHold: number;
+  analystSell: number;
 }
 
 export interface Stock {

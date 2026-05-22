@@ -1,8 +1,18 @@
 import { OHLCVBar } from "../entities/Stock";
 import { Score } from "../value-objects/Score";
-import { RSI, MACD, BollingerBands, EMA } from "technicalindicators";
+import {
+  RSI,
+  MACD,
+  BollingerBands,
+  EMA,
+  Stochastic,
+  ADX,
+  ATR,
+  OBV,
+} from "technicalindicators";
 
 export interface TechnicalBreakdown {
+  // Original
   rsi: number | null;
   rsiScore: number;
   rsiLabel: string;
@@ -17,6 +27,20 @@ export interface TechnicalBreakdown {
   lastClose: number | null;
   trendScore: number;
   trendLabel: string;
+  // New: Stochastic
+  stochK: number | null;
+  stochD: number | null;
+  stochScore: number;
+  stochLabel: string;
+  // New: OBV Accumulation
+  obvSlope5: number;
+  obvSlope20: number;
+  accumulationScore: number;
+  accumulationLabel: string;
+  // New: ADX + Consolidation
+  adx: number | null;
+  consolidation: boolean;
+  atrPct: number | null;
 }
 
 export interface TechnicalResult {
@@ -30,33 +54,46 @@ export class TechnicalScoringService {
   }
 
   scoreWithBreakdown(bars: OHLCVBar[]): TechnicalResult {
+    const emptyBreakdown: TechnicalBreakdown = {
+      rsi: null,
+      rsiScore: 0,
+      rsiLabel: "Data tidak cukup (< 50 bar)",
+      macdHistogram: null,
+      macdScore: 0,
+      macdLabel: "Data tidak cukup",
+      pctB: null,
+      bbScore: 0,
+      bbLabel: "Data tidak cukup",
+      ema20: null,
+      ema50: null,
+      lastClose: null,
+      trendScore: 0,
+      trendLabel: "Data tidak cukup",
+      stochK: null,
+      stochD: null,
+      stochScore: 0,
+      stochLabel: "Data tidak cukup",
+      obvSlope5: 0,
+      obvSlope20: 0,
+      accumulationScore: 0,
+      accumulationLabel: "Data tidak cukup",
+      adx: null,
+      consolidation: false,
+      atrPct: null,
+    };
     if (bars.length < 50) {
-      return {
-        score: new Score(0),
-        breakdown: {
-          rsi: null,
-          rsiScore: 0,
-          rsiLabel: "Data tidak cukup (< 50 bar)",
-          macdHistogram: null,
-          macdScore: 0,
-          macdLabel: "Data tidak cukup",
-          pctB: null,
-          bbScore: 0,
-          bbLabel: "Data tidak cukup",
-          ema20: null,
-          ema50: null,
-          lastClose: null,
-          trendScore: 0,
-          trendLabel: "Data tidak cukup",
-        },
-      };
+      return { score: new Score(0), breakdown: emptyBreakdown };
     }
 
     const closes = bars.map((b) => b.close);
+    const highs = bars.map((b) => b.high);
+    const lows = bars.map((b) => b.low);
     const volumes = bars.map((b) => b.volume);
     const lastClose = closes[closes.length - 1];
+    const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    const lastVolume = volumes[volumes.length - 1];
 
-    // --- RSI(14): buy zone 30-50 = 1.0 ---
+    // --- RSI(14): buy zone 30-50 = 1.0, weight 15% ---
     const rsiValues = RSI.calculate({ period: 14, values: closes });
     const rsi = rsiValues[rsiValues.length - 1] ?? 50;
     let rsiScore = 0;
@@ -78,7 +115,42 @@ export class TechnicalScoringService {
       rsiLabel = `RSI ${rsi.toFixed(1)} — Overbought (>70), hindari beli`;
     }
 
-    // --- MACD(12,26,9): histogram positif & naik = 1.0 ---
+    // --- Stochastic(14,3,3): weight 15% ---
+    const stochValues = Stochastic.calculate({
+      high: highs,
+      low: lows,
+      close: closes,
+      period: 14,
+      signalPeriod: 3,
+    });
+    const lastStoch = stochValues[stochValues.length - 1];
+    const stochK = lastStoch?.k ?? null;
+    const stochD = lastStoch?.d ?? null;
+    let stochScore = 0;
+    let stochLabel = "Stochastic — Data tidak cukup";
+    if (stochK !== null && stochD !== null) {
+      if (stochK < 20 && stochK > stochD) {
+        stochScore = 1.0;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Oversold & %K memotong ke atas, sinyal beli kuat`;
+      } else if (stochK < 20) {
+        stochScore = 0.8;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Oversold, potensi pembalikan`;
+      } else if (stochK < 40 && stochK > stochD) {
+        stochScore = 0.6;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Momentum naik dari zona rendah`;
+      } else if (stochK >= 40 && stochK < 60) {
+        stochScore = 0.4;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Netral`;
+      } else if (stochK >= 80) {
+        stochScore = 0.0;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Overbought, hindari beli`;
+      } else {
+        stochScore = 0.2;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Di atas level ideal`;
+      }
+    }
+
+    // --- MACD(12,26,9): weight 15% ---
     const macdResult = MACD.calculate({
       values: closes,
       fastPeriod: 12,
@@ -110,7 +182,7 @@ export class TechnicalScoringService {
       }
     }
 
-    // --- Bollinger Bands(20,2): harga dekat lower band = beli ---
+    // --- Bollinger Bands(20,2): weight 10% ---
     const bbResult = BollingerBands.calculate({
       period: 20,
       values: closes,
@@ -144,13 +216,11 @@ export class TechnicalScoringService {
       }
     }
 
-    // --- EMA20/EMA50 + Volume trend ---
+    // --- EMA20/EMA50 + Volume trend: weight 20% ---
     const ema20Values = EMA.calculate({ period: 20, values: closes });
     const ema50Values = EMA.calculate({ period: 50, values: closes });
     const ema20 = ema20Values[ema20Values.length - 1] ?? null;
     const ema50 = ema50Values[ema50Values.length - 1] ?? null;
-    const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-    const lastVolume = volumes[volumes.length - 1];
     let trendScore = 0;
     let trendLabel = "Tren — tidak ada sinyal";
     if (ema20 && ema50 && lastClose > ema20 && ema20 > ema50) {
@@ -169,9 +239,79 @@ export class TechnicalScoringService {
       trendLabel = "Harga di bawah EMA50 — Tren bearish";
     }
 
-    // Weighted: RSI 25% + MACD 25% + BB 25% + Trend 25%
-    const raw =
-      0.25 * rsiScore + 0.25 * macdScore + 0.25 * bbScore + 0.25 * trendScore;
+    // --- OBV Accumulation Signal: weight 25% ---
+    const obvValues = OBV.calculate({ close: closes, volume: volumes });
+    const recentOBV = obvValues.slice(-20);
+    const obvRange = Math.max(...recentOBV) - Math.min(...recentOBV);
+    const slope5 =
+      recentOBV.length >= 5
+        ? recentOBV[recentOBV.length - 1] - recentOBV[recentOBV.length - 5]
+        : 0;
+    const slope20 =
+      recentOBV.length >= 20
+        ? recentOBV[recentOBV.length - 1] - recentOBV[0]
+        : 0;
+    const normSlope5 = obvRange > 0 ? slope5 / obvRange : 0;
+    const normSlope20 = obvRange > 0 ? slope20 / obvRange : 0;
+
+    // ATR for consolidation detection
+    const atrValues = ATR.calculate({
+      period: 14,
+      high: highs,
+      low: lows,
+      close: closes,
+    });
+    const atr = atrValues[atrValues.length - 1] ?? null;
+    const atrPct = atr != null ? atr / lastClose : null;
+    const consolidation =
+      atrPct != null && atrPct < 0.015 && lastVolume >= avgVolume * 0.8;
+
+    let accumulationScore = 0;
+    let accumulationLabel = "";
+    if (normSlope5 > 0.1 && normSlope20 > 0.05) {
+      accumulationScore = 1.0;
+      accumulationLabel = `OBV naik (jangka pendek +${(normSlope5 * 100).toFixed(0)}%, panjang +${(normSlope20 * 100).toFixed(0)}%) — Akumulasi kuat oleh pemain besar`;
+    } else if (normSlope5 > 0.05) {
+      accumulationScore = 0.75;
+      accumulationLabel = `OBV mulai naik — Potensi akumulasi, perhatikan konfirmasi`;
+    } else if (consolidation && normSlope5 >= -0.05) {
+      accumulationScore = 0.6;
+      accumulationLabel = `Harga konsolidasi ketat (ATR ${atrPct != null ? (atrPct * 100).toFixed(1) : "–"}%) dengan OBV stabil — Harga dijaga, siap bergerak`;
+    } else if (normSlope5 < -0.1 && normSlope20 < -0.05) {
+      accumulationScore = 0.0;
+      accumulationLabel = `OBV turun konsisten — Distribusi, pemain besar keluar`;
+    } else if (normSlope5 < -0.05) {
+      accumulationScore = 0.25;
+      accumulationLabel = `OBV melemah — Tekanan jual, waspadai distribusi`;
+    } else {
+      accumulationScore = 0.4;
+      accumulationLabel = `OBV netral — Tidak ada sinyal akumulasi/distribusi jelas`;
+    }
+
+    // --- ADX(14): used as multiplier for trend clarity ---
+    const adxValues = ADX.calculate({
+      close: closes,
+      high: highs,
+      low: lows,
+      period: 14,
+    });
+    const adxData = adxValues[adxValues.length - 1];
+    const adx = (adxData as any)?.adx ?? null;
+
+    // Weighted sum: RSI 15% + Stoch 15% + MACD 15% + BB 10% + EMA Trend 20% + OBV 25%
+    let raw =
+      0.15 * rsiScore +
+      0.15 * stochScore +
+      0.15 * macdScore +
+      0.1 * bbScore +
+      0.2 * trendScore +
+      0.25 * accumulationScore;
+
+    // ADX multiplier: choppy market (< 15) lowers conviction
+    if (adx !== null && adx < 15) {
+      raw *= 0.85;
+    }
+
     return {
       score: new Score(Math.min(1, Math.max(0, raw))),
       breakdown: {
@@ -189,6 +329,17 @@ export class TechnicalScoringService {
         lastClose,
         trendScore,
         trendLabel,
+        stochK,
+        stochD,
+        stochScore,
+        stochLabel,
+        obvSlope5: normSlope5,
+        obvSlope20: normSlope20,
+        accumulationScore,
+        accumulationLabel,
+        adx,
+        consolidation,
+        atrPct,
       },
     };
   }

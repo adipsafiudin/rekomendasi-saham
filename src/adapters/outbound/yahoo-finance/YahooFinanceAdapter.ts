@@ -53,24 +53,53 @@ export class YahooFinanceAdapter implements IStockDataProvider {
     const symbol = ticker.toYahooSymbol();
 
     const summary = (await this.yf.quoteSummary(symbol, {
-      modules: ["financialData", "defaultKeyStatistics"],
-    })) as unknown as QuoteSummaryResult;
+      modules: [
+        "financialData",
+        "defaultKeyStatistics",
+        "assetProfile",
+        "recommendationTrend",
+      ],
+    })) as unknown as QuoteSummaryResult & { [key: string]: any };
 
     const fin = summary.financialData;
     const stats = summary.defaultKeyStatistics;
+    const profile = (summary as any).assetProfile;
+    const trend = (summary as any).recommendationTrend;
+
+    const currentPrice = fin?.currentPrice ?? null;
+    const trailingEps =
+      stats?.trailingEps != null ? (stats.trailingEps as number) : null;
+    const priceToBook = stats?.priceToBook ?? null;
+    const bookValuePerShare =
+      currentPrice != null && priceToBook != null && priceToBook > 0
+        ? currentPrice / priceToBook
+        : null;
+
+    // Analyst consensus: use most recent trend period (index 0 = current month)
+    const latestTrend = trend?.trend?.[0];
+    const analystBuy = (latestTrend?.strongBuy ?? 0) + (latestTrend?.buy ?? 0);
+    const analystHold = latestTrend?.hold ?? 0;
+    const analystSell =
+      (latestTrend?.sell ?? 0) + (latestTrend?.strongSell ?? 0);
 
     return {
       peRatio:
-        stats?.trailingEps != null &&
-        fin?.currentPrice != null &&
-        stats.trailingEps !== 0
-          ? fin.currentPrice / stats.trailingEps
+        trailingEps != null && currentPrice != null && trailingEps !== 0
+          ? currentPrice / trailingEps
           : null,
-      pbvRatio: stats?.priceToBook ?? null,
+      pbvRatio: priceToBook,
       roe: fin?.returnOnEquity ?? null,
       // financialData.revenueGrowth = YoY TTM revenue growth (still updated by Yahoo Finance)
       revenueGrowth: fin?.revenueGrowth ?? null,
       debtToEquity: fin?.debtToEquity != null ? fin.debtToEquity / 100 : null,
+      sector: profile?.sector ?? null,
+      industry: profile?.industry ?? null,
+      currentPrice,
+      trailingEps,
+      bookValuePerShare,
+      analystBuy,
+      analystHold,
+      analystSell,
     };
   }
 

@@ -54,7 +54,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           ]);
 
           const techResult = technicalScorer.scoreWithBreakdown(bars);
-          const fundResult = fundamentalScorer.scoreWithBreakdown(fundamentals);
+          const fundResult = fundamentalScorer.scoreWithBreakdown(
+            fundamentals,
+            undefined,
+            bars,
+          );
           const estimated =
             0.4 * techResult.score.number +
             0.4 * fundResult.score.number +

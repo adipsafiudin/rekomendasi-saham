@@ -1,7 +1,17 @@
-import { FundamentalData } from "../entities/Stock";
+import { FundamentalData, OHLCVBar } from "../entities/Stock";
 import { Score } from "../value-objects/Score";
 
+// ============================================================
+// Interfaces
+// ============================================================
+
+export interface SectorMedians {
+  medianPE: number | null;
+  medianPBV: number | null;
+}
+
 export interface FundamentalBreakdown {
+  // Core metrics
   pe: number | null;
   peScore: number | null;
   peLabel: string;
@@ -17,6 +27,48 @@ export interface FundamentalBreakdown {
   debtToEquity: number | null;
   deScore: number | null;
   deLabel: string;
+
+  // Stock type detection
+  isConglomerate: boolean;
+  isBank: boolean;
+
+  // Valuation context
+  sector: string | null;
+  industry: string | null;
+  currentPrice: number | null;
+  trailingEps: number | null;
+  bookValuePerShare: number | null;
+
+  // Sector comparison
+  sectorMedianPE: number | null;
+  sectorMedianPBV: number | null;
+  peRelative: number | null;
+  pbvRelative: number | null;
+  relValScore: number | null;
+  relValLabel: string;
+
+  // Historical price analysis
+  price52wHigh: number | null;
+  price52wLow: number | null;
+  pricePosition52w: number | null;
+  historicalMeanPrice: number | null;
+  priceHistScore: number | null;
+  priceHistLabel: string;
+
+  // Fair value
+  fairValue: number | null;
+  fairValueMethod: string;
+  marginOfSafety: number | null;
+  grahamNumber: number | null;
+  peerFairValue: number | null;
+  histFairValue: number | null;
+
+  // Analyst consensus
+  analystBuy: number;
+  analystHold: number;
+  analystSell: number;
+  analystScore: number | null;
+  analystLabel: string;
 }
 
 export interface FundamentalResult {
@@ -24,141 +76,294 @@ export interface FundamentalResult {
   breakdown: FundamentalBreakdown;
 }
 
+// ============================================================
+// Helpers
+// ============================================================
+
+export function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function detectConglomerate(industry: string | null): boolean {
+  if (!industry) return false;
+  const lower = industry.toLowerCase();
+  return (
+    lower.includes("conglomerate") ||
+    lower.includes("holding") ||
+    lower.includes("multi-sector") ||
+    lower.includes("diversified")
+  );
+}
+
+function detectBank(sector: string | null, industry: string | null): boolean {
+  const s = (sector ?? "").toLowerCase();
+  const i = (industry ?? "").toLowerCase();
+  return (
+    s.includes("financial") ||
+    i.includes("bank") ||
+    i.includes("insurance") ||
+    i.includes("finance")
+  );
+}
+
+// ============================================================
+// Service
+// ============================================================
+
 export class FundamentalScoringService {
-  score(fundamentals: FundamentalData): Score {
-    return this.scoreWithBreakdown(fundamentals).score;
+  score(
+    fundamentals: FundamentalData,
+    sectorContext?: SectorMedians,
+    bars?: OHLCVBar[],
+  ): Score {
+    return this.scoreWithBreakdown(fundamentals, sectorContext, bars).score;
   }
 
-  scoreWithBreakdown(fundamentals: FundamentalData): FundamentalResult {
-    const scores: number[] = [];
+  scoreWithBreakdown(
+    fundamentals: FundamentalData,
+    sectorContext?: SectorMedians,
+    bars?: OHLCVBar[],
+  ): FundamentalResult {
+    const metrics: { score: number; weight: number }[] = [];
 
-    // P/E Ratio: lower is better
-    let peScore: number | null = null;
-    let peLabel = "P/E — Tidak tersedia";
-    if (fundamentals.peRatio !== null) {
-      const pe = fundamentals.peRatio;
-      if (pe > 0 && pe <= 10) {
-        peScore = 1.0;
-        peLabel = `P/E ${pe.toFixed(1)}x — Sangat murah (≤10x)`;
-      } else if (pe > 10 && pe <= 15) {
-        peScore = 0.8;
-        peLabel = `P/E ${pe.toFixed(1)}x — Murah (10-15x)`;
-      } else if (pe > 15 && pe <= 20) {
-        peScore = 0.6;
-        peLabel = `P/E ${pe.toFixed(1)}x — Wajar (15-20x)`;
-      } else if (pe > 20 && pe <= 30) {
-        peScore = 0.4;
-        peLabel = `P/E ${pe.toFixed(1)}x — Sedikit mahal (20-30x)`;
-      } else if (pe > 30) {
-        peScore = 0.1;
-        peLabel = `P/E ${pe.toFixed(1)}x — Mahal (>30x)`;
-      } else {
-        peScore = 0;
-        peLabel = `P/E negatif — Perusahaan rugi`;
-      }
-      scores.push(peScore);
+    const isConglomerate = detectConglomerate(fundamentals.industry);
+    const isBank = detectBank(fundamentals.sector, fundamentals.industry);
+
+    // ----------------------------------------------------------
+    // 1. Historical price analysis from OHLCV bars (weight 15%)
+    // ----------------------------------------------------------
+    const closes = bars ? bars.map((b) => b.close) : [];
+    const price52wHigh = closes.length > 0 ? Math.max(...closes) : null;
+    const price52wLow  = closes.length > 0 ? Math.min(...closes) : null;
+    const historicalMeanPrice =
+      closes.length > 0
+        ? closes.reduce((a, b) => a + b, 0) / closes.length
+        : null;
+    const currentPrice = fundamentals.currentPrice;
+
+    let pricePosition52w: number | null = null;
+    if (price52wHigh != null && price52wLow != null && currentPrice != null && price52wHigh > price52wLow) {
+      pricePosition52w = (currentPrice - price52wLow) / (price52wHigh - price52wLow);
     }
 
-    // PBV: lower is better
-    let pbvScore: number | null = null;
-    let pbvLabel = "PBV — Tidak tersedia";
-    if (fundamentals.pbvRatio !== null) {
-      const pbv = fundamentals.pbvRatio;
-      if (pbv > 0 && pbv <= 1) {
-        pbvScore = 1.0;
-        pbvLabel = `PBV ${pbv.toFixed(2)}x — Di bawah nilai buku`;
-      } else if (pbv > 1 && pbv <= 2) {
-        pbvScore = 0.8;
-        pbvLabel = `PBV ${pbv.toFixed(2)}x — Murah (1-2x)`;
-      } else if (pbv > 2 && pbv <= 3) {
-        pbvScore = 0.6;
-        pbvLabel = `PBV ${pbv.toFixed(2)}x — Wajar (2-3x)`;
-      } else if (pbv > 3 && pbv <= 5) {
-        pbvScore = 0.3;
-        pbvLabel = `PBV ${pbv.toFixed(2)}x — Mahal (3-5x)`;
-      } else if (pbv > 5) {
-        pbvScore = 0.1;
-        pbvLabel = `PBV ${pbv.toFixed(2)}x — Sangat mahal (>5x)`;
-      } else {
-        pbvScore = 0;
-        pbvLabel = `PBV negatif — Ekuitas negatif`;
-      }
-      scores.push(pbvScore);
+    let priceHistScore: number | null = null;
+    let priceHistLabel = "Posisi Harga Historis — Data tidak cukup";
+    if (pricePosition52w !== null) {
+      const pct = pricePosition52w;
+      const pos = (pct * 100).toFixed(0);
+      if (pct <= 0.2)       { priceHistScore = 1.0;  priceHistLabel = `Harga di ${pos}% kisaran historis — Dekat titik terendah, historis murah`; }
+      else if (pct <= 0.4)  { priceHistScore = 0.75; priceHistLabel = `Harga di ${pos}% kisaran historis — Di bawah rata-rata historis`; }
+      else if (pct <= 0.6)  { priceHistScore = 0.5;  priceHistLabel = `Harga di ${pos}% kisaran historis — Mendekati rata-rata historis`; }
+      else if (pct <= 0.8)  { priceHistScore = 0.25; priceHistLabel = `Harga di ${pos}% kisaran historis — Di atas rata-rata historis`; }
+      else                  { priceHistScore = 0.0;  priceHistLabel = `Harga di ${pos}% kisaran historis — Mendekati titik tertinggi, historis mahal`; }
+      metrics.push({ score: priceHistScore, weight: 15 });
     }
 
-    // ROE: higher is better
+    // ----------------------------------------------------------
+    // 2. ROE — profitability (weight 20%)
+    // ----------------------------------------------------------
     let roeScore: number | null = null;
     let roeLabel = "ROE — Tidak tersedia";
     if (fundamentals.roe !== null) {
       const roe = fundamentals.roe;
-      if (roe >= 0.2) {
-        roeScore = 1.0;
-        roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Sangat efisien (≥20%)`;
-      } else if (roe >= 0.15) {
-        roeScore = 0.8;
-        roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Efisien (15-20%)`;
-      } else if (roe >= 0.1) {
-        roeScore = 0.6;
-        roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Cukup baik (10-15%)`;
-      } else if (roe >= 0.05) {
-        roeScore = 0.3;
-        roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Rendah (5-10%)`;
-      } else {
-        roeScore = 0;
-        roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Sangat rendah/rugi`;
-      }
-      scores.push(roeScore);
+      const [t1, t2, t3, t4] = isBank
+        ? [0.15, 0.12, 0.08, 0.04]
+        : [0.20, 0.15, 0.10, 0.05];
+      if (roe >= t1)       { roeScore = 1.0;  roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Sangat efisien`; }
+      else if (roe >= t2)  { roeScore = 0.75; roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Efisien`; }
+      else if (roe >= t3)  { roeScore = 0.5;  roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Cukup baik`; }
+      else if (roe >= t4)  { roeScore = 0.25; roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Rendah`; }
+      else                 { roeScore = 0;    roeLabel = `ROE ${(roe * 100).toFixed(1)}% — Sangat rendah atau rugi`; }
+      metrics.push({ score: roeScore, weight: 20 });
     }
 
-    // Revenue Growth YoY
+    // ----------------------------------------------------------
+    // 3. Revenue Growth YoY (weight 15%)
+    // ----------------------------------------------------------
     let revenueGrowthScore: number | null = null;
     let revenueGrowthLabel = "Revenue Growth — Tidak tersedia";
     if (fundamentals.revenueGrowth !== null) {
       const rg = fundamentals.revenueGrowth;
-      if (rg >= 0.2) {
-        revenueGrowthScore = 1.0;
-        revenueGrowthLabel = `Revenue Growth +${(rg * 100).toFixed(1)}% — Pertumbuhan kuat`;
-      } else if (rg >= 0.1) {
-        revenueGrowthScore = 0.75;
-        revenueGrowthLabel = `Revenue Growth +${(rg * 100).toFixed(1)}% — Pertumbuhan baik`;
-      } else if (rg >= 0.05) {
-        revenueGrowthScore = 0.5;
-        revenueGrowthLabel = `Revenue Growth +${(rg * 100).toFixed(1)}% — Pertumbuhan lambat`;
-      } else if (rg >= 0) {
-        revenueGrowthScore = 0.3;
-        revenueGrowthLabel = `Revenue Growth +${(rg * 100).toFixed(1)}% — Stagnan`;
-      } else {
-        revenueGrowthScore = 0;
-        revenueGrowthLabel = `Revenue Growth ${(rg * 100).toFixed(1)}% — Penurunan pendapatan`;
-      }
-      scores.push(revenueGrowthScore);
+      if (rg >= 0.20)       { revenueGrowthScore = 1.0;  revenueGrowthLabel = `Revenue Growth +${(rg * 100).toFixed(1)}% — Pertumbuhan kuat`; }
+      else if (rg >= 0.10)  { revenueGrowthScore = 0.75; revenueGrowthLabel = `Revenue Growth +${(rg * 100).toFixed(1)}% — Pertumbuhan baik`; }
+      else if (rg >= 0.05)  { revenueGrowthScore = 0.5;  revenueGrowthLabel = `Revenue Growth +${(rg * 100).toFixed(1)}% — Pertumbuhan lambat`; }
+      else if (rg >= 0)     { revenueGrowthScore = 0.25; revenueGrowthLabel = `Revenue Growth +${(rg * 100).toFixed(1)}% — Stagnan`; }
+      else                  { revenueGrowthScore = 0;    revenueGrowthLabel = `Revenue Growth ${(rg * 100).toFixed(1)}% — Penurunan pendapatan`; }
+      metrics.push({ score: revenueGrowthScore, weight: 15 });
     }
 
-    // Debt-to-Equity: lower is better
+    // ----------------------------------------------------------
+    // 4a. P/E (weight 15%) — relative-to-sector first, absolute fallback
+    // ----------------------------------------------------------
+    const sectorMedianPE  = sectorContext?.medianPE  ?? null;
+    const sectorMedianPBV = sectorContext?.medianPBV ?? null;
+
+    const peRelative  = (fundamentals.peRatio  != null && fundamentals.peRatio  > 0 && sectorMedianPE  != null) ? fundamentals.peRatio  / sectorMedianPE  : null;
+    const pbvRelative = (fundamentals.pbvRatio != null && fundamentals.pbvRatio > 0 && sectorMedianPBV != null) ? fundamentals.pbvRatio / sectorMedianPBV : null;
+
+    let peScore: number | null = null;
+    let peLabel = "P/E — Tidak tersedia";
+    if (fundamentals.peRatio !== null) {
+      const pe = fundamentals.peRatio;
+      if (peRelative !== null) {
+        if (peRelative <= 0.6)       { peScore = 1.0;  peLabel = `P/E ${pe.toFixed(1)}x — ${(peRelative*100).toFixed(0)}% dari median sektor, jauh lebih murah dari peers`; }
+        else if (peRelative <= 0.8)  { peScore = 0.8;  peLabel = `P/E ${pe.toFixed(1)}x — ${(peRelative*100).toFixed(0)}% dari median sektor, lebih murah dari peers`; }
+        else if (peRelative <= 1.0)  { peScore = 0.6;  peLabel = `P/E ${pe.toFixed(1)}x — Sesuai rata-rata sektor (median: ${sectorMedianPE!.toFixed(1)}x)`; }
+        else if (peRelative <= 1.3)  { peScore = 0.3;  peLabel = `P/E ${pe.toFixed(1)}x — ${((peRelative-1)*100).toFixed(0)}% lebih mahal dari sektor`; }
+        else                         { peScore = 0.1;  peLabel = `P/E ${pe.toFixed(1)}x — Jauh lebih mahal dari sektor (${(peRelative*100).toFixed(0)}%)`; }
+      } else if (pe > 0) {
+        const [cheap, fair, pricey, expensive] = isBank ? [10,15,20,30] : isConglomerate ? [8,12,18,25] : [10,15,20,25];
+        if (pe <= cheap)       { peScore = 1.0;  peLabel = `P/E ${pe.toFixed(1)}x — Sangat murah${isBank ? " (standar perbankan)" : ""}`; }
+        else if (pe <= fair)   { peScore = 0.75; peLabel = `P/E ${pe.toFixed(1)}x — Murah`; }
+        else if (pe <= pricey) { peScore = 0.5;  peLabel = `P/E ${pe.toFixed(1)}x — Wajar`; }
+        else if (pe <= expensive){ peScore = 0.25;peLabel = `P/E ${pe.toFixed(1)}x — Sedikit mahal`; }
+        else                   { peScore = 0.1;  peLabel = `P/E ${pe.toFixed(1)}x — Mahal (>${expensive}x)`; }
+      } else {
+        peScore = 0; peLabel = `P/E negatif — Perusahaan merugi`;
+      }
+      metrics.push({ score: peScore, weight: 15 });
+    }
+
+    // ----------------------------------------------------------
+    // 4b. P/BV (weight 10%)
+    // ----------------------------------------------------------
+    let pbvScore: number | null = null;
+    let pbvLabel = "PBV — Tidak tersedia";
+    if (fundamentals.pbvRatio !== null) {
+      const pbv = fundamentals.pbvRatio;
+      if (pbvRelative !== null) {
+        if (pbvRelative <= 0.6)        { pbvScore = 1.0;  pbvLabel = `PBV ${pbv.toFixed(2)}x — ${(pbvRelative*100).toFixed(0)}% dari median sektor, jauh lebih murah`; }
+        else if (pbvRelative <= 0.85)  { pbvScore = 0.75; pbvLabel = `PBV ${pbv.toFixed(2)}x — Lebih murah dari rata-rata sektor (median: ${sectorMedianPBV!.toFixed(2)}x)`; }
+        else if (pbvRelative <= 1.15)  { pbvScore = 0.5;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Setara rata-rata sektor`; }
+        else if (pbvRelative <= 1.5)   { pbvScore = 0.25; pbvLabel = `PBV ${pbv.toFixed(2)}x — Lebih mahal dari rata-rata sektor`; }
+        else                           { pbvScore = 0.0;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Jauh lebih mahal dari sektor`; }
+      } else if (pbv > 0) {
+        if (isBank || isConglomerate) {
+          if (pbv <= 1.0)      { pbvScore = 1.0;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Di bawah nilai buku`; }
+          else if (pbv <= 2.0) { pbvScore = 0.75; pbvLabel = `PBV ${pbv.toFixed(2)}x — Murah untuk sektor ini`; }
+          else if (pbv <= 3.5) { pbvScore = 0.5;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Wajar untuk sektor ini`; }
+          else if (pbv <= 5.0) { pbvScore = 0.25; pbvLabel = `PBV ${pbv.toFixed(2)}x — Sedikit mahal`; }
+          else                 { pbvScore = 0.1;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Mahal`; }
+        } else {
+          if (pbv <= 1.0)      { pbvScore = 1.0;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Di bawah nilai buku`; }
+          else if (pbv <= 2.0) { pbvScore = 0.8;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Murah (1–2x)`; }
+          else if (pbv <= 3.0) { pbvScore = 0.5;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Wajar (2–3x)`; }
+          else if (pbv <= 5.0) { pbvScore = 0.2;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Mahal (3–5x)`; }
+          else                 { pbvScore = 0.0;  pbvLabel = `PBV ${pbv.toFixed(2)}x — Sangat mahal (>5x)`; }
+        }
+      } else {
+        pbvScore = 0; pbvLabel = `PBV negatif — Ekuitas negatif`;
+      }
+      metrics.push({ score: pbvScore, weight: 10 });
+    }
+
+    // Combined relative valuation summary label
+    let relValScore: number | null = null;
+    let relValLabel = "Valuasi Relatif — Data sektor tidak tersedia";
+    const relInput = peRelative ?? pbvRelative;
+    if (relInput !== null) {
+      if (relInput <= 0.70)       { relValScore = 1.0;  relValLabel = `${(relInput*100).toFixed(0)}% dari median sektor — Jauh lebih murah dari peers`; }
+      else if (relInput <= 0.85)  { relValScore = 0.75; relValLabel = `${(relInput*100).toFixed(0)}% dari median sektor — Lebih murah dari peers`; }
+      else if (relInput <= 1.0)   { relValScore = 0.5;  relValLabel = `${(relInput*100).toFixed(0)}% dari median sektor — Setara dengan peers`; }
+      else if (relInput <= 1.3)   { relValScore = 0.25; relValLabel = `${(relInput*100).toFixed(0)}% dari median sektor — Lebih mahal dari peers`; }
+      else                        { relValScore = 0.0;  relValLabel = `${(relInput*100).toFixed(0)}% dari median sektor — Jauh lebih mahal dari peers`; }
+    }
+
+    // ----------------------------------------------------------
+    // 5. Debt-to-Equity (weight 15%) — skip for banks
+    // ----------------------------------------------------------
     let deScore: number | null = null;
     let deLabel = "D/E Ratio — Tidak tersedia";
     if (fundamentals.debtToEquity !== null) {
       const de = fundamentals.debtToEquity;
-      if (de <= 0.5) {
-        deScore = 1.0;
-        deLabel = `D/E ${de.toFixed(2)}x — Utang sangat rendah`;
-      } else if (de <= 1.0) {
-        deScore = 0.75;
-        deLabel = `D/E ${de.toFixed(2)}x — Utang terkendali`;
-      } else if (de <= 2.0) {
-        deScore = 0.4;
-        deLabel = `D/E ${de.toFixed(2)}x — Utang cukup tinggi`;
+      if (isBank) {
+        deLabel = `D/E ${de.toFixed(2)}x — Normal untuk perbankan (tidak diskor)`;
       } else {
-        deScore = 0.1;
-        deLabel = `D/E ${de.toFixed(2)}x — Utang sangat tinggi`;
+        if (de <= 0.3)       { deScore = 1.0;  deLabel = `D/E ${de.toFixed(2)}x — Sangat sehat, hampir bebas utang`; }
+        else if (de <= 0.7)  { deScore = 0.8;  deLabel = `D/E ${de.toFixed(2)}x — Utang terkendali`; }
+        else if (de <= 1.5)  { deScore = 0.5;  deLabel = `D/E ${de.toFixed(2)}x — Utang cukup tinggi`; }
+        else if (de <= 3.0)  { deScore = 0.2;  deLabel = `D/E ${de.toFixed(2)}x — Utang tinggi, perlu diawasi`; }
+        else                 { deScore = 0.0;  deLabel = `D/E ${de.toFixed(2)}x — Utang sangat tinggi, risiko tinggi`; }
+        metrics.push({ score: deScore, weight: 15 });
       }
-      scores.push(deScore);
     }
 
+    // ----------------------------------------------------------
+    // 6. Analyst Consensus (weight 10%)
+    // ----------------------------------------------------------
+    const totalAnalysts = fundamentals.analystBuy + fundamentals.analystHold + fundamentals.analystSell;
+    let analystScore: number | null = null;
+    let analystLabel = "Konsensus Analis — Tidak tersedia";
+    if (totalAnalysts > 0) {
+      const buyRatio = fundamentals.analystBuy / totalAnalysts;
+      if (buyRatio >= 0.70)       { analystScore = 1.0;  analystLabel = `${fundamentals.analystBuy}B / ${fundamentals.analystHold}T / ${fundamentals.analystSell}J — Konsensus kuat BELI`; }
+      else if (buyRatio >= 0.50)  { analystScore = 0.75; analystLabel = `${fundamentals.analystBuy}B / ${fundamentals.analystHold}T / ${fundamentals.analystSell}J — Mayoritas rekomendasikan Beli`; }
+      else if (buyRatio >= 0.30)  { analystScore = 0.5;  analystLabel = `${fundamentals.analystBuy}B / ${fundamentals.analystHold}T / ${fundamentals.analystSell}J — Pandangan campuran`; }
+      else                        { analystScore = 0.2;  analystLabel = `${fundamentals.analystBuy}B / ${fundamentals.analystHold}T / ${fundamentals.analystSell}J — Mayoritas Tahan/Jual`; }
+      metrics.push({ score: analystScore, weight: 10 });
+    }
+
+    // ----------------------------------------------------------
+    // Fair Value — stock-type-aware
+    // ----------------------------------------------------------
+    const eps  = fundamentals.trailingEps;
+    const bvps = fundamentals.bookValuePerShare;
+    const price = currentPrice;
+
+    // Graham Number: valid only for non-conglomerates with EPS + BVPS > 0
+    let grahamNumber: number | null = null;
+    if (!isConglomerate && eps != null && eps > 0 && bvps != null && bvps > 0) {
+      grahamNumber = Math.sqrt(22.5 * eps * bvps);
+    }
+
+    // Peer fair value: PBV-based for conglomerates, PE-based for others
+    let peerFairValue: number | null = null;
+    let peerFairValueMethod = "";
+    if (isConglomerate) {
+      if (bvps != null && bvps > 0 && sectorMedianPBV != null) {
+        peerFairValue = bvps * sectorMedianPBV;
+        peerFairValueMethod = "BVPS × Median PBV Sektor (Konglomerat)";
+      }
+    } else {
+      if (eps != null && eps > 0 && sectorMedianPE != null) {
+        peerFairValue = eps * sectorMedianPE;
+        peerFairValueMethod = "EPS × Median PE Sektor";
+      }
+    }
+
+    const histFairValue = historicalMeanPrice;
+
+    let fairValue: number | null = null;
+    let fairValueMethod = "Tidak tersedia";
+    if (peerFairValue != null) {
+      fairValue = peerFairValue;
+      fairValueMethod = peerFairValueMethod;
+    } else if (grahamNumber != null) {
+      fairValue = grahamNumber;
+      fairValueMethod = "Graham Number";
+    } else if (histFairValue != null) {
+      fairValue = histFairValue;
+      fairValueMethod = "Rata-rata Harga 120 Hari";
+    }
+
+    let marginOfSafety: number | null = null;
+    if (fairValue != null && price != null && price > 0) {
+      marginOfSafety = (fairValue - price) / fairValue;
+    }
+
+    // ----------------------------------------------------------
+    // Normalize and compute final score
+    // ----------------------------------------------------------
+    const totalWeight = metrics.reduce((sum, m) => sum + m.weight, 0);
     const avgScore =
-      scores.length === 0
+      totalWeight === 0
         ? 0.5
-        : scores.reduce((a, b) => a + b, 0) / scores.length;
+        : metrics.reduce((sum, m) => sum + m.score * m.weight, 0) / totalWeight;
 
     return {
       score: new Score(Math.min(1, Math.max(0, avgScore))),
@@ -178,6 +383,36 @@ export class FundamentalScoringService {
         debtToEquity: fundamentals.debtToEquity,
         deScore,
         deLabel,
+        isConglomerate,
+        isBank,
+        sector: fundamentals.sector,
+        industry: fundamentals.industry,
+        currentPrice: price,
+        trailingEps: eps,
+        bookValuePerShare: bvps,
+        sectorMedianPE,
+        sectorMedianPBV,
+        peRelative,
+        pbvRelative,
+        relValScore,
+        relValLabel,
+        price52wHigh,
+        price52wLow,
+        pricePosition52w,
+        historicalMeanPrice,
+        priceHistScore,
+        priceHistLabel,
+        fairValue,
+        fairValueMethod,
+        marginOfSafety,
+        grahamNumber,
+        peerFairValue,
+        histFairValue,
+        analystBuy: fundamentals.analystBuy,
+        analystHold: fundamentals.analystHold,
+        analystSell: fundamentals.analystSell,
+        analystScore,
+        analystLabel,
       },
     };
   }

@@ -5,7 +5,11 @@ import { ISentimentAnalyzer } from "../../core/ports/outbound/ISentimentAnalyzer
 import { INarrator } from "../../core/ports/outbound/INarrator";
 import { Ticker } from "../../core/domain/value-objects/Ticker";
 import { TechnicalScoringService } from "../../core/domain/services/TechnicalScoringService";
-import { FundamentalScoringService } from "../../core/domain/services/FundamentalScoringService";
+import {
+  FundamentalScoringService,
+  SectorMedians,
+  median,
+} from "../../core/domain/services/FundamentalScoringService";
 import { PriceTargetService } from "../../core/domain/services/PriceTargetService";
 import { AuditService } from "../../core/domain/services/AuditService";
 import { DecisionService } from "../../core/domain/services/DecisionService";
@@ -116,9 +120,39 @@ export class DailyPipelineUseCase {
       }
     }
 
-    // Step 2: Score & Groq calls sequentially to respect rate limits
+    // Step 2: Compute sector medians from all fetched fundamentals
+    const sectorPEs = new Map<string, number[]>();
+    const sectorPBVs = new Map<string, number[]>();
     for (const data of stockDataList) {
       if (!data) continue;
+      const s = data.fundamentals.sector ?? "Unknown";
+      if (data.fundamentals.peRatio != null && data.fundamentals.peRatio > 0) {
+        if (!sectorPEs.has(s)) sectorPEs.set(s, []);
+        sectorPEs.get(s)!.push(data.fundamentals.peRatio);
+      }
+      if (
+        data.fundamentals.pbvRatio != null &&
+        data.fundamentals.pbvRatio > 0
+      ) {
+        if (!sectorPBVs.has(s)) sectorPBVs.set(s, []);
+        sectorPBVs.get(s)!.push(data.fundamentals.pbvRatio);
+      }
+    }
+    const sectorMediansMap = new Map<string, SectorMedians>();
+    const allSectors = new Set([...sectorPEs.keys(), ...sectorPBVs.keys()]);
+    for (const sector of allSectors) {
+      sectorMediansMap.set(sector, {
+        medianPE: median(sectorPEs.get(sector) ?? []),
+        medianPBV: median(sectorPBVs.get(sector) ?? []),
+      });
+    }
+
+    // Step 3: Score & Groq calls sequentially to respect rate limits
+    for (const data of stockDataList) {
+      if (!data) continue;
+      const sectorCtx = sectorMediansMap.get(
+        data.fundamentals.sector ?? "Unknown",
+      );
       await this.processTickerWithData(
         data.ticker,
         data.bars,
@@ -126,6 +160,7 @@ export class DailyPipelineUseCase {
         data.news,
         winRate,
         result,
+        sectorCtx,
       );
       await new Promise((resolve) =>
         setTimeout(resolve, GROQ_INTER_TICKER_DELAY_MS),
@@ -140,11 +175,15 @@ export class DailyPipelineUseCase {
     news: Awaited<ReturnType<IStockDataProvider["getNews"]>>,
     winRate: number,
     result: PipelineResult,
+    sectorContext?: SectorMedians,
   ): Promise<void> {
     try {
       const techResult = this.technicalScorer.scoreWithBreakdown(bars);
-      const fundResult =
-        this.fundamentalScorer.scoreWithBreakdown(fundamentals);
+      const fundResult = this.fundamentalScorer.scoreWithBreakdown(
+        fundamentals,
+        sectorContext,
+        bars,
+      );
       const sentimentResult = await this.sentimentAnalyzer.analyze(news);
       const { aggregatedScore, sentimentNormalized, shouldBuy } =
         this.decisionService.decide({

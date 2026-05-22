@@ -17,6 +17,18 @@ interface TechnicalBreakdown {
   lastClose: number | null;
   trendScore: number;
   trendLabel: string;
+  // New indicators
+  stochK: number | null;
+  stochD: number | null;
+  stochScore: number;
+  stochLabel: string;
+  obvSlope5: number;
+  obvSlope20: number;
+  accumulationScore: number;
+  accumulationLabel: string;
+  adx: number | null;
+  consolidation: boolean;
+  atrPct: number | null;
 }
 
 interface FundamentalBreakdown {
@@ -35,6 +47,42 @@ interface FundamentalBreakdown {
   debtToEquity: number | null;
   deScore: number | null;
   deLabel: string;
+  // Stock type
+  isConglomerate: boolean;
+  isBank: boolean;
+  // Context
+  sector: string | null;
+  industry: string | null;
+  currentPrice: number | null;
+  trailingEps: number | null;
+  bookValuePerShare: number | null;
+  // Sector comparison
+  sectorMedianPE: number | null;
+  sectorMedianPBV: number | null;
+  peRelative: number | null;
+  pbvRelative: number | null;
+  relValScore: number | null;
+  relValLabel: string;
+  // Historical price
+  price52wHigh: number | null;
+  price52wLow: number | null;
+  pricePosition52w: number | null;
+  historicalMeanPrice: number | null;
+  priceHistScore: number | null;
+  priceHistLabel: string;
+  // Fair value
+  fairValue: number | null;
+  fairValueMethod: string;
+  marginOfSafety: number | null;
+  grahamNumber: number | null;
+  peerFairValue: number | null;
+  histFairValue: number | null;
+  // Analyst consensus
+  analystBuy: number;
+  analystHold: number;
+  analystSell: number;
+  analystScore: number | null;
+  analystLabel: string;
 }
 
 interface ScoreResult {
@@ -340,24 +388,40 @@ function BreakdownPanel({
           </div>
           {tech ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {[
-                { label: "RSI(14)", score: tech.rsiScore, desc: tech.rsiLabel },
-                {
-                  label: "MACD(12,26,9)",
-                  score: tech.macdScore,
-                  desc: tech.macdLabel,
-                },
-                {
-                  label: "Bollinger Bands",
-                  score: tech.bbScore,
-                  desc: tech.bbLabel,
-                },
-                {
-                  label: "EMA Trend + Volume",
-                  score: tech.trendScore,
-                  desc: tech.trendLabel,
-                },
-              ].map(({ label, score, desc }) => (
+              {(
+                [
+                  {
+                    label: "RSI(14)",
+                    score: tech.rsiScore,
+                    desc: tech.rsiLabel,
+                  },
+                  {
+                    label: "Stochastic(14,3)",
+                    score: tech.stochScore,
+                    desc: tech.stochLabel,
+                  },
+                  {
+                    label: "MACD(12,26,9)",
+                    score: tech.macdScore,
+                    desc: tech.macdLabel,
+                  },
+                  {
+                    label: "Bollinger Bands",
+                    score: tech.bbScore,
+                    desc: tech.bbLabel,
+                  },
+                  {
+                    label: "EMA Trend + Volume",
+                    score: tech.trendScore,
+                    desc: tech.trendLabel,
+                  },
+                  {
+                    label: "OBV Akumulasi",
+                    score: tech.accumulationScore,
+                    desc: tech.accumulationLabel,
+                  },
+                ] as { label: string; score: number; desc: string }[]
+              ).map(({ label, score, desc }) => (
                 <div
                   key={label}
                   style={{
@@ -388,6 +452,48 @@ function BreakdownPanel({
                   <div style={{ fontSize: 12, lineHeight: 1.5 }}>{desc}</div>
                 </div>
               ))}
+              {(tech.adx != null || tech.consolidation) && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {tech.adx != null && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        padding: "2px 8px",
+                        borderRadius: 4,
+                        fontWeight: 700,
+                        background:
+                          tech.adx >= 25
+                            ? "var(--green)"
+                            : tech.adx < 15
+                              ? "var(--red)"
+                              : "var(--yellow)",
+                        color: "#000",
+                      }}
+                    >
+                      ADX {tech.adx.toFixed(0)}
+                      {tech.adx >= 25
+                        ? " 🔥 Tren Kuat"
+                        : tech.adx < 15
+                          ? " 😴 Sideways"
+                          : " ➡ Tren Lemah"}
+                    </span>
+                  )}
+                  {tech.consolidation && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        padding: "2px 8px",
+                        borderRadius: 4,
+                        fontWeight: 700,
+                        background: "var(--blue)",
+                        color: "#000",
+                      }}
+                    >
+                      🔒 Konsolidasi Ketat
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
@@ -411,25 +517,191 @@ function BreakdownPanel({
           </div>
           {fund ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {[
-                { label: "P/E Ratio", score: fund.peScore, desc: fund.peLabel },
-                {
-                  label: "P/BV Ratio",
-                  score: fund.pbvScore,
-                  desc: fund.pbvLabel,
-                },
-                { label: "ROE", score: fund.roeScore, desc: fund.roeLabel },
-                {
-                  label: "Revenue Growth",
-                  score: fund.revenueGrowthScore,
-                  desc: fund.revenueGrowthLabel,
-                },
-                {
-                  label: "Debt/Equity",
-                  score: fund.deScore,
-                  desc: fund.deLabel,
-                },
-              ].map(({ label, score, desc }) => (
+              {/* Stock type + sector badge */}
+              {(fund.sector || fund.isConglomerate || fund.isBank) && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--text-muted)",
+                    marginBottom: 2,
+                  }}
+                >
+                  {fund.sector}
+                  {fund.industry ? ` · ${fund.industry}` : ""}
+                  {fund.isConglomerate && (
+                    <span
+                      style={{
+                        marginLeft: 6,
+                        color: "var(--blue)",
+                        fontWeight: 700,
+                      }}
+                    >
+                      KONGLOMERAT
+                    </span>
+                  )}
+                  {fund.isBank && (
+                    <span
+                      style={{
+                        marginLeft: 6,
+                        color: "var(--blue)",
+                        fontWeight: 700,
+                      }}
+                    >
+                      PERBANKAN
+                    </span>
+                  )}
+                </div>
+              )}
+              {/* Fair value banner */}
+              {fund.fairValue != null && (
+                <div
+                  style={{
+                    background: "rgba(255,200,0,0.08)",
+                    border: "1px solid var(--yellow)",
+                    borderRadius: 6,
+                    padding: "8px 12px",
+                    marginBottom: 2,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 800,
+                      color: "var(--yellow)",
+                      marginBottom: 4,
+                    }}
+                  >
+                    💰 HARGA WAJAR — {fund.fairValueMethod}
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 700 }}>
+                    Rp {Math.round(fund.fairValue).toLocaleString("id-ID")}
+                    {fund.marginOfSafety != null && (
+                      <span
+                        style={{
+                          marginLeft: 8,
+                          fontSize: 12,
+                          color:
+                            fund.marginOfSafety > 0
+                              ? "var(--green)"
+                              : "var(--red)",
+                          fontWeight: 700,
+                        }}
+                      >
+                        {fund.marginOfSafety > 0 ? "▼" : "▲"}{" "}
+                        {Math.abs(fund.marginOfSafety * 100).toFixed(1)}%{" "}
+                        {fund.marginOfSafety > 0 ? "diskon" : "premium"}
+                      </span>
+                    )}
+                  </div>
+                  {(fund.grahamNumber != null ||
+                    fund.histFairValue != null) && (
+                    <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
+                      {fund.grahamNumber != null && (
+                        <div
+                          style={{ fontSize: 11, color: "var(--text-muted)" }}
+                        >
+                          Graham:{" "}
+                          <strong>
+                            Rp{" "}
+                            {Math.round(fund.grahamNumber).toLocaleString(
+                              "id-ID",
+                            )}
+                          </strong>
+                        </div>
+                      )}
+                      {fund.histFairValue != null && (
+                        <div
+                          style={{ fontSize: 11, color: "var(--text-muted)" }}
+                        >
+                          Rata-rata 120H:{" "}
+                          <strong>
+                            Rp{" "}
+                            {Math.round(fund.histFairValue).toLocaleString(
+                              "id-ID",
+                            )}
+                          </strong>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {(fund.sectorMedianPE != null ||
+                    fund.sectorMedianPBV != null) && (
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "var(--text-muted)",
+                        marginTop: 3,
+                      }}
+                    >
+                      {fund.sectorMedianPE != null &&
+                        `Median PE sektor: ${fund.sectorMedianPE.toFixed(1)}x`}
+                      {fund.sectorMedianPBV != null &&
+                        (fund.sectorMedianPE != null ? " · " : "") +
+                          `Median PBV: ${fund.sectorMedianPBV.toFixed(2)}x`}
+                    </div>
+                  )}
+                </div>
+              )}
+              {(
+                [
+                  {
+                    label: "Posisi Harga Historis",
+                    score: fund.priceHistScore,
+                    desc: fund.priceHistLabel,
+                  },
+                  { label: "ROE", score: fund.roeScore, desc: fund.roeLabel },
+                  {
+                    label: "Revenue Growth",
+                    score: fund.revenueGrowthScore,
+                    desc: fund.revenueGrowthLabel,
+                  },
+                  {
+                    label: "P/E Ratio",
+                    score: fund.peScore,
+                    desc: fund.peLabel,
+                  },
+                  {
+                    label: "P/BV Ratio",
+                    score: fund.pbvScore,
+                    desc: fund.pbvLabel,
+                  },
+                  ...(fund.deScore != null
+                    ? [
+                        {
+                          label: "Debt/Equity",
+                          score: fund.deScore,
+                          desc: fund.deLabel,
+                        },
+                      ]
+                    : fund.isBank
+                      ? [
+                          {
+                            label: "Debt/Equity",
+                            score: null as number | null,
+                            desc: fund.deLabel,
+                          },
+                        ]
+                      : []),
+                  ...(fund.relValScore != null
+                    ? [
+                        {
+                          label: "Valuasi vs Sektor",
+                          score: fund.relValScore,
+                          desc: fund.relValLabel,
+                        },
+                      ]
+                    : []),
+                  ...(fund.analystScore != null
+                    ? [
+                        {
+                          label: "Konsensus Analis",
+                          score: fund.analystScore,
+                          desc: fund.analystLabel,
+                        },
+                      ]
+                    : []),
+                ] as { label: string; score: number | null; desc: string }[]
+              ).map(({ label, score, desc }) => (
                 <div
                   key={label}
                   style={{
