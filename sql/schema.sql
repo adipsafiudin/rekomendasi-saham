@@ -6,7 +6,6 @@
 -- Enable UUID generation
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
-
 -- ----------------------------------------------------------------
 -- Main table: recommendation_history
 -- ----------------------------------------------------------------
