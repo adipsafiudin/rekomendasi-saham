@@ -7,4 +7,7 @@ export interface SentimentResult {
 
 export interface ISentimentAnalyzer {
   analyze(news: NewsItem[]): Promise<SentimentResult>;
+  analyzeBatch(
+    items: { ticker: string; news: NewsItem[] }[],
+  ): Promise<Map<string, SentimentResult>>;
 }

@@ -17,8 +17,7 @@ import { Recommendation } from "../../core/domain/entities/Recommendation";
 
 const YAHOO_BATCH_SIZE = 10;
 const YAHOO_BATCH_DELAY_MS = 1000;
-// Groq free tier: 12,000 TPM. Each stock uses ~900 tokens (sentiment+narrator).
-// Processing sequentially with 2s delay keeps us safely under ~900 TPM average.
+// Delay between narrator calls (only runs for actual BUY candidates, typically 0-3/day)
 const GROQ_INTER_TICKER_DELAY_MS = 2000;
 // Pre-filter: only call Groq if tech+fund combined score can still reach BUY_THRESHOLD.
 // Formula: 0.4*tech + 0.4*fund + 0.2*sentiment(max=1) >= 0.75 → pre-score >= 0.55
@@ -150,95 +149,95 @@ export class DailyPipelineUseCase {
       });
     }
 
-    // Step 3: Score & Groq calls sequentially to respect rate limits
+    // Step 3: Pre-filter by tech+fund score — only run Groq on viable candidates
+    const candidates: Array<{
+      ticker: Ticker;
+      bars: Awaited<ReturnType<IStockDataProvider["getHistoricalOHLCV"]>>;
+      fundamentals: Awaited<ReturnType<IStockDataProvider["getFundamentals"]>>;
+      news: Awaited<ReturnType<IStockDataProvider["getNews"]>>;
+      techResult: ReturnType<TechnicalScoringService["scoreWithBreakdown"]>;
+      fundResult: ReturnType<FundamentalScoringService["scoreWithBreakdown"]>;
+    }> = [];
+
     for (const data of stockDataList) {
       if (!data) continue;
       const sectorCtx = sectorMediansMap.get(
         data.fundamentals.sector ?? "Unknown",
       );
-      const groqCalled = await this.processTickerWithData(
-        data.ticker,
-        data.bars,
+      const techResult = this.technicalScorer.scoreWithBreakdown(data.bars);
+      const fundResult = this.fundamentalScorer.scoreWithBreakdown(
         data.fundamentals,
-        data.news,
-        winRate,
-        result,
         sectorCtx,
+        data.bars,
       );
-      if (groqCalled) {
+      const preScore =
+        0.4 * techResult.score.number + 0.4 * fundResult.score.number;
+      if (preScore < GROQ_PRESCORE_MIN) continue;
+      candidates.push({ ...data, techResult, fundResult });
+    }
+
+    if (candidates.length === 0) return;
+
+    // Step 4: ONE batch Groq call for sentiment across all candidates
+    console.log(
+      `[Pipeline] Running batch sentiment for ${candidates.length} candidates`,
+    );
+    const sentimentMap = await this.sentimentAnalyzer.analyzeBatch(
+      candidates.map((c) => ({ ticker: c.ticker.raw, news: c.news })),
+    );
+
+    // Step 5: Decide + narrator (sequential, only for BUY candidates)
+    for (const c of candidates) {
+      const sentimentResult = sentimentMap.get(c.ticker.raw) ?? {
+        score: 0,
+        reasoning: "Missing from batch result",
+      };
+      const { aggregatedScore, sentimentNormalized, shouldBuy } =
+        this.decisionService.decide({
+          technicalScore: c.techResult.score,
+          fundamentalScore: c.fundResult.score,
+          sentimentRaw: sentimentResult.score,
+        });
+
+      if (!shouldBuy) continue;
+
+      try {
+        const priceTarget = this.priceTargetService.calculate(c.bars);
+        const lastBar = c.bars[c.bars.length - 1];
+
+        const partialRec: Omit<Recommendation, "narrative"> = {
+          id: randomUUID(),
+          ticker: c.ticker,
+          date: lastBar.date,
+          entryPrice: priceTarget.entryPrice,
+          targetPrice: priceTarget.targetPrice,
+          stopLoss: priceTarget.stopLoss,
+          technicalScore: c.techResult.score.number,
+          fundamentalScore: c.fundResult.score.number,
+          sentimentScore: sentimentNormalized,
+          aggregatedScore,
+          sentimentJson: sentimentResult,
+          winRateAtRecommendation: winRate,
+          technicalBreakdown: c.techResult.breakdown,
+          fundamentalBreakdown: c.fundResult.breakdown,
+          status: "PENDING",
+        };
+
+        const narrative = await this.narrator.summarize(
+          partialRec as Recommendation,
+          winRate,
+        );
+        await this.repository.save({ ...partialRec, narrative });
+        result.recommended.push(c.ticker.raw);
+
+        // Delay only between narrator calls (BUY candidates only, typically 0-3)
         await new Promise((resolve) =>
           setTimeout(resolve, GROQ_INTER_TICKER_DELAY_MS),
         );
+      } catch (err) {
+        result.errors.push(`Score ${c.ticker.raw}: ${String(err)}`);
       }
     }
   }
 
-  // Returns true if Groq was called (for rate-limit delay logic)
-  private async processTickerWithData(
-    ticker: Ticker,
-    bars: Awaited<ReturnType<IStockDataProvider["getHistoricalOHLCV"]>>,
-    fundamentals: Awaited<ReturnType<IStockDataProvider["getFundamentals"]>>,
-    news: Awaited<ReturnType<IStockDataProvider["getNews"]>>,
-    winRate: number,
-    result: PipelineResult,
-    sectorContext?: SectorMedians,
-  ): Promise<boolean> {
-    try {
-      const techResult = this.technicalScorer.scoreWithBreakdown(bars);
-      const fundResult = this.fundamentalScorer.scoreWithBreakdown(
-        fundamentals,
-        sectorContext,
-        bars,
-      );
-
-      // Skip Groq entirely if tech+fund combined can't reach BUY_THRESHOLD
-      const preScore =
-        0.4 * techResult.score.number + 0.4 * fundResult.score.number;
-      if (preScore < GROQ_PRESCORE_MIN) return false;
-
-      const sentimentResult = await this.sentimentAnalyzer.analyze(news);
-      const { aggregatedScore, sentimentNormalized, shouldBuy } =
-        this.decisionService.decide({
-          technicalScore: techResult.score,
-          fundamentalScore: fundResult.score,
-          sentimentRaw: sentimentResult.score,
-        });
-
-      if (!shouldBuy) return true; // Groq was called, delay still needed
-
-      const priceTarget = this.priceTargetService.calculate(bars);
-      const lastBar = bars[bars.length - 1];
-
-      const partialRec: Omit<Recommendation, "narrative"> = {
-        id: randomUUID(),
-        ticker,
-        date: lastBar.date,
-        entryPrice: priceTarget.entryPrice,
-        targetPrice: priceTarget.targetPrice,
-        stopLoss: priceTarget.stopLoss,
-        technicalScore: techResult.score.number,
-        fundamentalScore: fundResult.score.number,
-        sentimentScore: sentimentNormalized,
-        aggregatedScore,
-        sentimentJson: sentimentResult,
-        winRateAtRecommendation: winRate,
-        technicalBreakdown: techResult.breakdown,
-        fundamentalBreakdown: fundResult.breakdown,
-        status: "PENDING",
-      };
-
-      const narrative = await this.narrator.summarize(
-        partialRec as Recommendation,
-        winRate,
-      );
-      const recommendation: Recommendation = { ...partialRec, narrative };
-
-      await this.repository.save(recommendation);
-      result.recommended.push(ticker.raw);
-      return true;
-    } catch (err) {
-      result.errors.push(`Score ${ticker.raw}: ${String(err)}`);
-      return true; // Groq may have been called before the error
-    }
-  }
 }
