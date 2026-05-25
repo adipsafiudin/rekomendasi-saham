@@ -204,7 +204,7 @@ export class DailyPipelineUseCase {
           sentimentRaw: sentimentResult.score,
         });
 
-      if (!shouldBuy) return;
+      if (!shouldBuy) return true; // Groq was called, delay still needed
 
       const priceTarget = this.priceTargetService.calculate(bars);
       const lastBar = bars[bars.length - 1];
