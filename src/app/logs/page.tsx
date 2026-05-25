@@ -1,6 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 import RefreshButton from "./RefreshButton";
 
+export const revalidate = 0;
+
 interface CronLog {
   id: string;
   started_at: string;
