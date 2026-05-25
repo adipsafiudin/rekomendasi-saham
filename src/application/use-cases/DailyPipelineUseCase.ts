@@ -20,6 +20,9 @@ const YAHOO_BATCH_DELAY_MS = 1000;
 // Groq free tier: 12,000 TPM. Each stock uses ~900 tokens (sentiment+narrator).
 // Processing sequentially with 2s delay keeps us safely under ~900 TPM average.
 const GROQ_INTER_TICKER_DELAY_MS = 2000;
+// Pre-filter: only call Groq if tech+fund combined score can still reach BUY_THRESHOLD.
+// Formula: 0.4*tech + 0.4*fund + 0.2*sentiment(max=1) >= 0.75 → pre-score >= 0.55
+const GROQ_PRESCORE_MIN = 0.55;
 
 export interface PipelineResult {
   audited: number;
@@ -153,7 +156,7 @@ export class DailyPipelineUseCase {
       const sectorCtx = sectorMediansMap.get(
         data.fundamentals.sector ?? "Unknown",
       );
-      await this.processTickerWithData(
+      const groqCalled = await this.processTickerWithData(
         data.ticker,
         data.bars,
         data.fundamentals,
@@ -162,12 +165,15 @@ export class DailyPipelineUseCase {
         result,
         sectorCtx,
       );
-      await new Promise((resolve) =>
-        setTimeout(resolve, GROQ_INTER_TICKER_DELAY_MS),
-      );
+      if (groqCalled) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, GROQ_INTER_TICKER_DELAY_MS),
+        );
+      }
     }
   }
 
+  // Returns true if Groq was called (for rate-limit delay logic)
   private async processTickerWithData(
     ticker: Ticker,
     bars: Awaited<ReturnType<IStockDataProvider["getHistoricalOHLCV"]>>,
@@ -176,7 +182,7 @@ export class DailyPipelineUseCase {
     winRate: number,
     result: PipelineResult,
     sectorContext?: SectorMedians,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const techResult = this.technicalScorer.scoreWithBreakdown(bars);
       const fundResult = this.fundamentalScorer.scoreWithBreakdown(
@@ -184,6 +190,12 @@ export class DailyPipelineUseCase {
         sectorContext,
         bars,
       );
+
+      // Skip Groq entirely if tech+fund combined can't reach BUY_THRESHOLD
+      const preScore =
+        0.4 * techResult.score.number + 0.4 * fundResult.score.number;
+      if (preScore < GROQ_PRESCORE_MIN) return false;
+
       const sentimentResult = await this.sentimentAnalyzer.analyze(news);
       const { aggregatedScore, sentimentNormalized, shouldBuy } =
         this.decisionService.decide({
@@ -223,8 +235,10 @@ export class DailyPipelineUseCase {
 
       await this.repository.save(recommendation);
       result.recommended.push(ticker.raw);
+      return true;
     } catch (err) {
       result.errors.push(`Score ${ticker.raw}: ${String(err)}`);
+      return true; // Groq may have been called before the error
     }
   }
 }

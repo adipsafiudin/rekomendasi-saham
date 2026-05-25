@@ -8,7 +8,7 @@ import { OHLCVBar, FundamentalData } from "../../../core/domain/entities/Stock";
 import { NewsItem } from "../../../core/domain/entities/NewsItem";
 
 export class YahooFinanceAdapter implements IStockDataProvider {
-  private yf = new YahooFinance();
+  private yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
   async getHistoricalOHLCV(ticker: Ticker, days: number): Promise<OHLCVBar[]> {
     const symbol = ticker.toYahooSymbol();
     // Add 2-day buffer so Yahoo Finance includes the most recent completed trading day

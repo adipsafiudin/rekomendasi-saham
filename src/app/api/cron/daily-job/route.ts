@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { buildPipeline } from "../../../../lib/container";
 
-export const maxDuration = 300; // 5 minutes (requires Vercel Pro)
+export const maxDuration = 60; // Vercel Hobby Plan max. Upgrade to Pro for 300s.
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   // Validate Vercel Cron secret
