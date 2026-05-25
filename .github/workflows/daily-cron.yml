@@ -9,25 +9,24 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
-      - name: Trigger daily pipeline
-        run: |
-          echo "Triggering pipeline at $(date)"
-          response=$(curl --silent --show-error \
-            --max-time 600 \
-            --write-out "\n%{http_code}" \
-            -X GET "${{ secrets.APP_URL }}/api/cron/daily-job" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}")
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-          http_code=$(echo "$response" | tail -n1)
-          body=$(echo "$response" | sed '$d')
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
 
-          echo "HTTP status: $http_code"
-          echo "Response: $body"
+      - name: Install dependencies
+        run: npm ci
 
-          if [ "$http_code" != "200" ]; then
-            echo "Pipeline failed with status $http_code"
-            exit 1
-          fi
+      - name: Run pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: npx tsx scripts/run-pipeline.ts
