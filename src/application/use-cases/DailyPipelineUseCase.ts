@@ -21,7 +21,8 @@ const YAHOO_BATCH_DELAY_MS = 1000;
 const GROQ_INTER_TICKER_DELAY_MS = 2000;
 // Pre-filter: only call Groq if tech+fund combined score can still reach BUY_THRESHOLD.
 // Formula: 0.4*tech + 0.4*fund + 0.2*sentiment(max=1) >= 0.75 → pre-score >= 0.55
-const GROQ_PRESCORE_MIN = 0.55;
+// Pre-filter: 0.4*tech + 0.4*fund + 0.2*sentiment(max=1) >= 0.68 → pre-score >= 0.48
+const GROQ_PRESCORE_MIN = 0.48;
 
 export interface PipelineResult {
   audited: number;
@@ -122,22 +123,24 @@ export class DailyPipelineUseCase {
       }
     }
 
-    // Step 2: Compute sector medians from all fetched fundamentals
+    // Step 2: Compute sector medians — filter outliers to prevent extreme PBV/PE
+    // from corrupting the median (e.g. a single stock with PBV 2000x)
     const sectorPEs = new Map<string, number[]>();
     const sectorPBVs = new Map<string, number[]>();
     for (const data of stockDataList) {
       if (!data) continue;
       const s = data.fundamentals.sector ?? "Unknown";
-      if (data.fundamentals.peRatio != null && data.fundamentals.peRatio > 0) {
+      const pe = data.fundamentals.peRatio;
+      const pbv = data.fundamentals.pbvRatio;
+      // PE: only include sensible range (avoid loss-making and extreme growth distortion)
+      if (pe != null && pe > 3 && pe < 100) {
         if (!sectorPEs.has(s)) sectorPEs.set(s, []);
-        sectorPEs.get(s)!.push(data.fundamentals.peRatio);
+        sectorPEs.get(s)!.push(pe);
       }
-      if (
-        data.fundamentals.pbvRatio != null &&
-        data.fundamentals.pbvRatio > 0
-      ) {
+      // PBV: only include sensible range (cap at 30x; >30x is an outlier for IDX stocks)
+      if (pbv != null && pbv > 0.1 && pbv < 30) {
         if (!sectorPBVs.has(s)) sectorPBVs.set(s, []);
-        sectorPBVs.get(s)!.push(data.fundamentals.pbvRatio);
+        sectorPBVs.get(s)!.push(pbv);
       }
     }
     const sectorMediansMap = new Map<string, SectorMedians>();
@@ -202,7 +205,10 @@ export class DailyPipelineUseCase {
       if (!shouldBuy) continue;
 
       try {
-        const priceTarget = this.priceTargetService.calculate(c.bars);
+        const priceTarget = this.priceTargetService.calculate(
+          c.bars,
+          c.fundResult.breakdown.fairValue,
+        );
         const lastBar = c.bars[c.bars.length - 1];
 
         const partialRec: Omit<Recommendation, "narrative"> = {
@@ -239,5 +245,4 @@ export class DailyPipelineUseCase {
       }
     }
   }
-
 }

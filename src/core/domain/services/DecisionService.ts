@@ -12,7 +12,9 @@ export interface DecisionResult {
   shouldBuy: boolean;
 }
 
-const BUY_THRESHOLD = 0.75;
+// MoS now contributes 25% of fundamental score, making the scoring more calibrated.
+// Threshold lowered 0.75 → 0.68 to reflect improved signal quality.
+const BUY_THRESHOLD = 0.68;
 
 export class DecisionService {
   decide(inputs: ScoringInputs): DecisionResult {

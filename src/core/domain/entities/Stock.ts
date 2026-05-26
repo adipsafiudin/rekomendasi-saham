@@ -14,13 +14,18 @@ export interface FundamentalData {
   pbvRatio: number | null;
   roe: number | null; // Return on Equity (decimal, e.g. 0.15 = 15%)
   revenueGrowth: number | null; // YoY revenue growth (decimal)
+  earningsGrowth: number | null; // YoY earnings/net-income growth (decimal)
+  profitMargin: number | null; // Net profit margin (decimal)
   debtToEquity: number | null;
   // Extended fields for fair value + sector comparison
   sector: string | null;
   industry: string | null;
   currentPrice: number | null;
   trailingEps: number | null;
-  bookValuePerShare: number | null; // currentPrice / priceToBook
+  bookValuePerShare: number | null;
+  // Yahoo Finance 52-week range (more accurate than OHLCV window)
+  fiftyTwoWeekHigh: number | null;
+  fiftyTwoWeekLow: number | null;
   analystBuy: number;
   analystHold: number;
   analystSell: number;

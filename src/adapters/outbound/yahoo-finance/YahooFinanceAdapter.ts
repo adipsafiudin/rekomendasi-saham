@@ -52,30 +52,158 @@ export class YahooFinanceAdapter implements IStockDataProvider {
   async getFundamentals(ticker: Ticker): Promise<FundamentalData> {
     const symbol = ticker.toYahooSymbol();
 
+    // Fetch core modules with normal validation.
     const summary = (await this.yf.quoteSummary(symbol, {
       modules: [
         "financialData",
         "defaultKeyStatistics",
         "assetProfile",
         "recommendationTrend",
+        "summaryDetail", // 52-week range, trailingPE
       ],
     })) as unknown as QuoteSummaryResult & { [key: string]: any };
 
-    const fin = summary.financialData;
-    const stats = summary.defaultKeyStatistics;
+    // Fetch earnings separately with validation disabled.
+    // The `earnings` module triggers FailedYahooValidationError for many IDX
+    // stocks (non-fatal schema differences in Yahoo's response). The data itself
+    // is valid — we just need to bypass the strict json-schema check.
+    const earningsSummary = (await this.yf
+      .quoteSummary(
+        symbol,
+        { modules: ["earnings"] },
+        { validateResult: false },
+      )
+      .catch(() => null)) as any;
+
+    const fin = (summary as any).financialData;
+    const stats = (summary as any).defaultKeyStatistics;
     const profile = (summary as any).assetProfile;
     const trend = (summary as any).recommendationTrend;
+    const detail = (summary as any).summaryDetail;
 
-    const currentPrice = fin?.currentPrice ?? null;
-    const trailingEps =
-      stats?.trailingEps != null ? (stats.trailingEps as number) : null;
-    const priceToBook = stats?.priceToBook ?? null;
-    const bookValuePerShare =
-      currentPrice != null && priceToBook != null && priceToBook > 0
-        ? currentPrice / priceToBook
+    // Annual revenue/earnings chart — 4 years, sorted ascending by year.
+    // More reliable than the deprecated balance sheet / income statement modules.
+    type YearlyRow = {
+      date: number;
+      revenue: number;
+      earnings: number;
+      profitMargin: number;
+    };
+    const yearlyChart: YearlyRow[] =
+      earningsSummary?.earnings?.financialsChart?.yearly ?? [];
+
+    const currentPrice: number | null = fin?.currentPrice ?? null;
+
+    // ── Shares outstanding ───────────────────────────────────────────────────
+    const sharesOutstanding: number | null =
+      (stats?.sharesOutstanding as number | null | undefined) ?? null;
+
+    // ── EPS ─────────────────────────────────────────────────────────────────
+    // Prefer Yahoo's cached trailingEps.
+    // Fallback: most recent annual earnings / shares (from yearly chart).
+    const latestEarningsYear = [...yearlyChart]
+      .reverse()
+      .find((y) => y.earnings !== 0);
+    const epsFromChart: number | null =
+      latestEarningsYear != null &&
+      sharesOutstanding != null &&
+      sharesOutstanding > 0
+        ? latestEarningsYear.earnings / sharesOutstanding
+        : null;
+    const trailingEps: number | null =
+      stats?.trailingEps != null && (stats.trailingEps as number) !== 0
+        ? (stats.trailingEps as number)
+        : epsFromChart;
+
+    // ── Book Value Per Share ─────────────────────────────────────────────────
+    // defaultKeyStatistics.bookValue IS BVPS directly — most reliable source.
+    const rawBookValue: number | null =
+      stats?.bookValue != null && (stats.bookValue as number) > 0
+        ? (stats.bookValue as number)
         : null;
 
-    // Analyst consensus: use most recent trend period (index 0 = current month)
+    // Compute PBV from actual BVPS (more accurate than Yahoo's cached priceToBook)
+    const pbvFromBook: number | null =
+      rawBookValue != null && currentPrice != null && currentPrice > 0
+        ? currentPrice / rawBookValue
+        : null;
+    const rawPBV: number | null =
+      pbvFromBook ?? (stats?.priceToBook as number | null | undefined) ?? null;
+    // Sanity cap: PBV > 50 for an IDX blue-chip is almost certainly a data error
+    const pbvRatio: number | null =
+      rawPBV != null && rawPBV > 0 && rawPBV <= 50 ? rawPBV : null;
+    const bookValuePerShare: number | null =
+      rawBookValue ??
+      (pbvRatio != null && currentPrice != null && currentPrice > 0
+        ? currentPrice / pbvRatio
+        : null);
+
+    // ── PE Ratio ─────────────────────────────────────────────────────────────
+    const trailingPE: number | null =
+      (detail?.trailingPE as number | null | undefined) ?? null;
+    const peRatio: number | null =
+      trailingEps != null && currentPrice != null && trailingEps > 0
+        ? currentPrice / trailingEps
+        : trailingPE != null && trailingPE > 0 && trailingPE < 200
+          ? trailingPE
+          : null;
+
+    // ── Revenue Growth YoY ──────────────────────────────────────────────────
+    // Primary: Yahoo's pre-computed value (TTM basis).
+    // Fallback: YoY from the two most recent years with positive revenue in the
+    // earnings chart. Revenue = 0 or negative indicates a holding company year
+    // where earnings come from investment returns, not operating revenue — skip.
+    const revenueGrowthCalc: number | null = (() => {
+      const valid = yearlyChart.filter((y) => y.revenue > 0);
+      if (valid.length < 2) return null;
+      const latest = valid[valid.length - 1];
+      const prior = valid[valid.length - 2];
+      return (latest.revenue - prior.revenue) / Math.abs(prior.revenue);
+    })();
+    const revenueGrowth: number | null =
+      (fin?.revenueGrowth as number | null | undefined) ?? revenueGrowthCalc;
+
+    // ── Earnings Growth YoY ─────────────────────────────────────────────────
+    const earningsGrowthCalc: number | null = (() => {
+      if (yearlyChart.length < 2) return null;
+      const latest = yearlyChart[yearlyChart.length - 1];
+      const prior = yearlyChart[yearlyChart.length - 2];
+      if (prior.earnings === 0) return null;
+      return (latest.earnings - prior.earnings) / Math.abs(prior.earnings);
+    })();
+    const earningsGrowth: number | null =
+      (fin?.earningsGrowth as number | null | undefined) ?? earningsGrowthCalc;
+
+    // ── Profit Margin ────────────────────────────────────────────────────────
+    // Primary: Yahoo's TTM profitMargins.
+    // Fallback: most recent annual profitMargin from earnings chart where
+    // revenue > 0 (avoids years where holding companies report zero revenue).
+    const profitMarginCalc: number | null = (() => {
+      const valid = [...yearlyChart]
+        .reverse()
+        .find((y) => y.revenue > 0 && y.profitMargin !== 0);
+      return valid?.profitMargin ?? null;
+    })();
+    const profitMargin: number | null =
+      (fin?.profitMargins as number | null | undefined) ?? profitMarginCalc;
+
+    // ── ROE ──────────────────────────────────────────────────────────────────
+    const roe: number | null =
+      (fin?.returnOnEquity as number | null | undefined) ?? null;
+
+    // ── Debt-to-Equity ───────────────────────────────────────────────────────
+    // Yahoo financialData.debtToEquity is in percentage form (e.g. 150.5 = 1.505×).
+    // It is null for banks (expected — banks use capital adequacy ratios instead).
+    const debtToEquity: number | null =
+      fin?.debtToEquity != null ? (fin.debtToEquity as number) / 100 : null;
+
+    // ── 52-Week Range ────────────────────────────────────────────────────────
+    const fiftyTwoWeekHigh: number | null =
+      (detail?.fiftyTwoWeekHigh as number | null | undefined) ?? null;
+    const fiftyTwoWeekLow: number | null =
+      (detail?.fiftyTwoWeekLow as number | null | undefined) ?? null;
+
+    // ── Analyst consensus ────────────────────────────────────────────────────
     const latestTrend = trend?.trend?.[0];
     const analystBuy = (latestTrend?.strongBuy ?? 0) + (latestTrend?.buy ?? 0);
     const analystHold = latestTrend?.hold ?? 0;
@@ -83,20 +211,20 @@ export class YahooFinanceAdapter implements IStockDataProvider {
       (latestTrend?.sell ?? 0) + (latestTrend?.strongSell ?? 0);
 
     return {
-      peRatio:
-        trailingEps != null && currentPrice != null && trailingEps !== 0
-          ? currentPrice / trailingEps
-          : null,
-      pbvRatio: priceToBook,
-      roe: fin?.returnOnEquity ?? null,
-      // financialData.revenueGrowth = YoY TTM revenue growth (still updated by Yahoo Finance)
-      revenueGrowth: fin?.revenueGrowth ?? null,
-      debtToEquity: fin?.debtToEquity != null ? fin.debtToEquity / 100 : null,
+      peRatio,
+      pbvRatio,
+      roe,
+      revenueGrowth,
+      earningsGrowth,
+      profitMargin,
+      debtToEquity,
       sector: profile?.sector ?? null,
       industry: profile?.industry ?? null,
       currentPrice,
       trailingEps,
       bookValuePerShare,
+      fiftyTwoWeekHigh,
+      fiftyTwoWeekLow,
       analystBuy,
       analystHold,
       analystSell,

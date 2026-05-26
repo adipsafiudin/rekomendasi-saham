@@ -47,6 +47,9 @@ interface FundamentalBreakdown {
   debtToEquity: number | null;
   deScore: number | null;
   deLabel: string;
+  // Additional quality metrics
+  earningsGrowth: number | null;
+  profitMargin: number | null;
   // Stock type
   isConglomerate: boolean;
   isBank: boolean;
@@ -76,7 +79,11 @@ interface FundamentalBreakdown {
   marginOfSafety: number | null;
   grahamNumber: number | null;
   peerFairValue: number | null;
+  peerFairValuePE: number | null;
+  peerFairValuePBV: number | null;
   histFairValue: number | null;
+  mosScore: number | null;
+  mosLabel: string;
   // Analyst consensus
   analystBuy: number;
   analystHold: number;
@@ -581,44 +588,123 @@ function BreakdownPanel({
                           marginLeft: 8,
                           fontSize: 12,
                           color:
-                            fund.marginOfSafety > 0
+                            fund.marginOfSafety >= 0.15
                               ? "var(--green)"
-                              : "var(--red)",
+                              : fund.marginOfSafety >= 0
+                                ? "var(--blue)"
+                                : "var(--red)",
                           fontWeight: 700,
                         }}
                       >
                         {fund.marginOfSafety > 0 ? "▼" : "▲"}{" "}
                         {Math.abs(fund.marginOfSafety * 100).toFixed(1)}%{" "}
-                        {fund.marginOfSafety > 0 ? "diskon" : "premium"}
+                        {fund.marginOfSafety >= 0.15
+                          ? "diskon (undervalued)"
+                          : fund.marginOfSafety >= 0
+                            ? "mendekati wajar"
+                            : "premium (overvalued)"}
                       </span>
                     )}
                   </div>
-                  {(fund.grahamNumber != null ||
-                    fund.histFairValue != null) && (
-                    <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
-                      {fund.grahamNumber != null && (
+                  {/* Per-method components */}
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 12,
+                      marginTop: 6,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    {fund.peerFairValuePE != null && (
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        EPS×Median PE:{" "}
+                        <strong>
+                          Rp{" "}
+                          {Math.round(fund.peerFairValuePE).toLocaleString(
+                            "id-ID",
+                          )}
+                        </strong>
+                      </div>
+                    )}
+                    {fund.peerFairValuePBV != null && (
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        BVPS×Median PBV:{" "}
+                        <strong>
+                          Rp{" "}
+                          {Math.round(fund.peerFairValuePBV).toLocaleString(
+                            "id-ID",
+                          )}
+                        </strong>
+                      </div>
+                    )}
+                    {fund.grahamNumber != null && (
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        Graham:{" "}
+                        <strong>
+                          Rp{" "}
+                          {Math.round(fund.grahamNumber).toLocaleString(
+                            "id-ID",
+                          )}
+                        </strong>
+                      </div>
+                    )}
+                    {fund.histFairValue != null && (
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        Rata-rata 120H:{" "}
+                        <strong>
+                          Rp{" "}
+                          {Math.round(fund.histFairValue).toLocaleString(
+                            "id-ID",
+                          )}
+                        </strong>
+                      </div>
+                    )}
+                  </div>
+                  {/* Extra quality metrics */}
+                  {(fund.earningsGrowth != null ||
+                    fund.profitMargin != null) && (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 12,
+                        marginTop: 5,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      {fund.earningsGrowth != null && (
                         <div
                           style={{ fontSize: 11, color: "var(--text-muted)" }}
                         >
-                          Graham:{" "}
-                          <strong>
-                            Rp{" "}
-                            {Math.round(fund.grahamNumber).toLocaleString(
-                              "id-ID",
-                            )}
+                          Earnings Growth:{" "}
+                          <strong
+                            style={{
+                              color:
+                                fund.earningsGrowth >= 0
+                                  ? "var(--green)"
+                                  : "var(--red)",
+                            }}
+                          >
+                            {fund.earningsGrowth >= 0 ? "+" : ""}
+                            {(fund.earningsGrowth * 100).toFixed(1)}%
                           </strong>
                         </div>
                       )}
-                      {fund.histFairValue != null && (
+                      {fund.profitMargin != null && (
                         <div
                           style={{ fontSize: 11, color: "var(--text-muted)" }}
                         >
-                          Rata-rata 120H:{" "}
-                          <strong>
-                            Rp{" "}
-                            {Math.round(fund.histFairValue).toLocaleString(
-                              "id-ID",
-                            )}
+                          Net Margin:{" "}
+                          <strong
+                            style={{
+                              color:
+                                fund.profitMargin >= 0.1
+                                  ? "var(--green)"
+                                  : fund.profitMargin >= 0
+                                    ? "var(--blue)"
+                                    : "var(--red)",
+                            }}
+                          >
+                            {(fund.profitMargin * 100).toFixed(1)}%
                           </strong>
                         </div>
                       )}
@@ -649,6 +735,23 @@ function BreakdownPanel({
                     score: fund.priceHistScore,
                     desc: fund.priceHistLabel,
                   },
+                  ...(fund.mosScore != null
+                    ? [
+                        {
+                          label: "Margin of Safety (Harga Wajar)",
+                          score: fund.mosScore,
+                          desc: fund.mosLabel,
+                        },
+                      ]
+                    : fund.fairValue != null
+                      ? [
+                          {
+                            label: "Margin of Safety",
+                            score: null as number | null,
+                            desc: fund.mosLabel,
+                          },
+                        ]
+                      : []),
                   { label: "ROE", score: fund.roeScore, desc: fund.roeLabel },
                   {
                     label: "Revenue Growth",

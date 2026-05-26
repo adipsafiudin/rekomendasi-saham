@@ -3,6 +3,9 @@ import RecommendationTable, {
   RecommendationRow,
 } from "./components/RecommendationTable";
 
+// Always render fresh from DB on every request (prevents Vercel static cache)
+export const dynamic = "force-dynamic";
+
 async function getRecommendations(): Promise<RecommendationRow[]> {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
