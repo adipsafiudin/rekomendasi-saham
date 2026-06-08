@@ -12,20 +12,20 @@ export interface DecisionResult {
   shouldBuy: boolean;
 }
 
-// MoS now contributes 25% of fundamental score, making the scoring more calibrated.
-// Threshold lowered 0.75 → 0.68 to reflect improved signal quality.
-const BUY_THRESHOLD = 0.68;
+// IDX daily recommendations need to tolerate sparse local news coverage.
+// Technical/fundamental signals carry more weight; sentiment is confirmation.
+export const BUY_THRESHOLD = 0.64;
 
 export class DecisionService {
   decide(inputs: ScoringInputs): DecisionResult {
     // Normalize sentiment from (-1,1) to (0,1)
     const sentimentNormalized = (inputs.sentimentRaw + 1) / 2;
 
-    // Weighted aggregate: 40% technical + 40% fundamental + 20% sentiment
+    // Weighted aggregate: 50% technical + 40% fundamental + 10% sentiment
     const aggregatedScore =
-      0.4 * inputs.technicalScore.number +
+      0.5 * inputs.technicalScore.number +
       0.4 * inputs.fundamentalScore.number +
-      0.2 * sentimentNormalized;
+      0.1 * sentimentNormalized;
 
     return {
       aggregatedScore,

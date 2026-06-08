@@ -12,17 +12,22 @@ import {
 } from "../../core/domain/services/FundamentalScoringService";
 import { PriceTargetService } from "../../core/domain/services/PriceTargetService";
 import { AuditService } from "../../core/domain/services/AuditService";
-import { DecisionService } from "../../core/domain/services/DecisionService";
+import {
+  BUY_THRESHOLD,
+  DecisionService,
+} from "../../core/domain/services/DecisionService";
 import { Recommendation } from "../../core/domain/entities/Recommendation";
 
 const YAHOO_BATCH_SIZE = 10;
 const YAHOO_BATCH_DELAY_MS = 1000;
+const MAX_SENTIMENT_CANDIDATES = 35;
+const MIN_AVG_TURNOVER_20D = 250_000_000;
+const MIN_REWARD_RISK = 1.25;
 // Delay between narrator calls (only runs for actual BUY candidates, typically 0-3/day)
 const GROQ_INTER_TICKER_DELAY_MS = 2000;
-// Pre-filter: only call Groq if tech+fund combined score can still reach BUY_THRESHOLD.
-// Formula: 0.4*tech + 0.4*fund + 0.2*sentiment(max=1) >= 0.75 → pre-score >= 0.55
-// Pre-filter: 0.4*tech + 0.4*fund + 0.2*sentiment(max=1) >= 0.68 → pre-score >= 0.48
-const GROQ_PRESCORE_MIN = 0.48;
+// Pre-filter: only call Groq if tech+fund can still reach BUY_THRESHOLD.
+// Formula: 0.5*tech + 0.4*fund + 0.1*sentiment(max=1) >= 0.64.
+const GROQ_PRESCORE_MIN = BUY_THRESHOLD - 0.1;
 
 export interface PipelineResult {
   audited: number;
@@ -160,6 +165,7 @@ export class DailyPipelineUseCase {
       news: Awaited<ReturnType<IStockDataProvider["getNews"]>>;
       techResult: ReturnType<TechnicalScoringService["scoreWithBreakdown"]>;
       fundResult: ReturnType<FundamentalScoringService["scoreWithBreakdown"]>;
+      preScore: number;
     }> = [];
 
     for (const data of stockDataList) {
@@ -173,24 +179,28 @@ export class DailyPipelineUseCase {
         sectorCtx,
         data.bars,
       );
+      if (techResult.breakdown.avgTurnover20 < MIN_AVG_TURNOVER_20D) continue;
+
       const preScore =
-        0.4 * techResult.score.number + 0.4 * fundResult.score.number;
+        0.5 * techResult.score.number + 0.4 * fundResult.score.number;
       if (preScore < GROQ_PRESCORE_MIN) continue;
-      candidates.push({ ...data, techResult, fundResult });
+      candidates.push({ ...data, techResult, fundResult, preScore });
     }
 
     if (candidates.length === 0) return;
+    candidates.sort((a, b) => b.preScore - a.preScore);
+    const sentimentCandidates = candidates.slice(0, MAX_SENTIMENT_CANDIDATES);
 
     // Step 4: ONE batch Groq call for sentiment across all candidates
     console.log(
-      `[Pipeline] Running batch sentiment for ${candidates.length} candidates`,
+      `[Pipeline] Running batch sentiment for ${sentimentCandidates.length}/${candidates.length} candidates`,
     );
     const sentimentMap = await this.sentimentAnalyzer.analyzeBatch(
-      candidates.map((c) => ({ ticker: c.ticker.raw, news: c.news })),
+      sentimentCandidates.map((c) => ({ ticker: c.ticker.raw, news: c.news })),
     );
 
     // Step 5: Decide + narrator (sequential, only for BUY candidates)
-    for (const c of candidates) {
+    for (const c of sentimentCandidates) {
       const sentimentResult = sentimentMap.get(c.ticker.raw) ?? {
         score: 0,
         reasoning: "Missing from batch result",
@@ -209,6 +219,15 @@ export class DailyPipelineUseCase {
           c.bars,
           c.fundResult.breakdown.fairValue,
         );
+        const upside =
+          (priceTarget.targetPrice - priceTarget.entryPrice) /
+          priceTarget.entryPrice;
+        const downside =
+          (priceTarget.entryPrice - priceTarget.stopLoss) /
+          priceTarget.entryPrice;
+        const rewardRisk = downside > 0 ? upside / downside : 0;
+        if (rewardRisk < MIN_REWARD_RISK) continue;
+
         const lastBar = c.bars[c.bars.length - 1];
 
         const partialRec: Omit<Recommendation, "narrative"> = {

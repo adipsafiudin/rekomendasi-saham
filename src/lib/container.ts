@@ -4,7 +4,7 @@ import { SupabaseRecommendationRepository } from "../adapters/outbound/supabase/
 import { GroqSentimentAdapter } from "../adapters/outbound/groq/GroqSentimentAdapter";
 import { GroqNarratorAdapter } from "../adapters/outbound/groq/GroqNarratorAdapter";
 import { Ticker } from "../core/domain/value-objects/Ticker";
-import { IDX80_TICKERS } from "./constants/idx80";
+import { parseTickerUniverse } from "./constants/idx-universe";
 
 /**
  * Builds and returns a fully wired DailyPipelineUseCase.
@@ -15,7 +15,9 @@ export function buildPipeline(): DailyPipelineUseCase {
   const repository = new SupabaseRecommendationRepository();
   const sentimentAnalyzer = new GroqSentimentAdapter();
   const narrator = new GroqNarratorAdapter();
-  const tickers = IDX80_TICKERS.map((t) => new Ticker(t));
+  const tickers = parseTickerUniverse(process.env.IDX_TICKERS).map(
+    (t) => new Ticker(t),
+  );
 
   return new DailyPipelineUseCase(
     stockDataProvider,

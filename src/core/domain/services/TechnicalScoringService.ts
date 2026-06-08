@@ -41,6 +41,11 @@ export interface TechnicalBreakdown {
   adx: number | null;
   consolidation: boolean;
   atrPct: number | null;
+  breakoutScore: number;
+  breakoutLabel: string;
+  liquidityScore: number;
+  liquidityLabel: string;
+  avgTurnover20: number;
 }
 
 export interface TechnicalResult {
@@ -80,6 +85,11 @@ export class TechnicalScoringService {
       adx: null,
       consolidation: false,
       atrPct: null,
+      breakoutScore: 0,
+      breakoutLabel: "Data tidak cukup",
+      liquidityScore: 0,
+      liquidityLabel: "Data tidak cukup",
+      avgTurnover20: 0,
     };
     if (bars.length < 50) {
       return { score: new Score(0), breakdown: emptyBreakdown };
@@ -92,27 +102,32 @@ export class TechnicalScoringService {
     const lastClose = closes[closes.length - 1];
     const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
     const lastVolume = volumes[volumes.length - 1];
+    const avgTurnover20 =
+      bars.slice(-20).reduce((sum, b) => sum + b.close * b.volume, 0) / 20;
 
-    // --- RSI(14): buy zone 30-50 = 1.0, weight 15% ---
+    // --- RSI(14): IDX-friendly; rewards healthy momentum, not only pullbacks. ---
     const rsiValues = RSI.calculate({ period: 14, values: closes });
     const rsi = rsiValues[rsiValues.length - 1] ?? 50;
     let rsiScore = 0;
     let rsiLabel = "";
-    if (rsi >= 30 && rsi <= 50) {
+    if (rsi >= 45 && rsi <= 62) {
       rsiScore = 1.0;
-      rsiLabel = `RSI ${rsi.toFixed(1)} — Zona beli ideal (30-50)`;
-    } else if (rsi > 50 && rsi <= 60) {
+      rsiLabel = `RSI ${rsi.toFixed(1)} - Momentum sehat (45-62)`;
+    } else if (rsi >= 35 && rsi < 45) {
       rsiScore = 0.75;
-      rsiLabel = `RSI ${rsi.toFixed(1)} — Momentum positif (50-60)`;
-    } else if (rsi > 60 && rsi <= 70) {
-      rsiScore = 0.4;
-      rsiLabel = `RSI ${rsi.toFixed(1)} — Mendekati overbought (60-70)`;
+      rsiLabel = `RSI ${rsi.toFixed(1)} - Pullback sehat, potensi rebound`;
+    } else if (rsi > 62 && rsi <= 70) {
+      rsiScore = 0.65;
+      rsiLabel = `RSI ${rsi.toFixed(1)} - Momentum kuat, mulai panas`;
     } else if (rsi < 30) {
-      rsiScore = 0.5;
-      rsiLabel = `RSI ${rsi.toFixed(1)} — Oversold, potensi reversal`;
+      rsiScore = 0.35;
+      rsiLabel = `RSI ${rsi.toFixed(1)} - Oversold, tunggu konfirmasi`;
+    } else if (rsi < 35) {
+      rsiScore = 0.55;
+      rsiLabel = `RSI ${rsi.toFixed(1)} - Mulai murah tapi momentum lemah`;
     } else {
       rsiScore = 0;
-      rsiLabel = `RSI ${rsi.toFixed(1)} — Overbought (>70), hindari beli`;
+      rsiLabel = `RSI ${rsi.toFixed(1)} - Overbought (>70), risiko koreksi`;
     }
 
     // --- Stochastic(14,3,3): weight 15% ---
@@ -131,22 +146,22 @@ export class TechnicalScoringService {
     if (stochK !== null && stochD !== null) {
       if (stochK < 20 && stochK > stochD) {
         stochScore = 1.0;
-        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Oversold & %K memotong ke atas, sinyal beli kuat`;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} - Oversold & %K memotong ke atas, sinyal beli kuat`;
       } else if (stochK < 20) {
         stochScore = 0.8;
-        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Oversold, potensi pembalikan`;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} - Oversold, potensi pembalikan`;
       } else if (stochK < 40 && stochK > stochD) {
         stochScore = 0.6;
-        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Momentum naik dari zona rendah`;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} - Momentum naik dari zona rendah`;
       } else if (stochK >= 40 && stochK < 60) {
         stochScore = 0.4;
-        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Netral`;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} - Netral`;
       } else if (stochK >= 80) {
         stochScore = 0.0;
-        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Overbought, hindari beli`;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} - Overbought, hindari beli`;
       } else {
         stochScore = 0.2;
-        stochLabel = `Stoch %K ${stochK.toFixed(1)} — Di atas level ideal`;
+        stochLabel = `Stoch %K ${stochK.toFixed(1)} - Di atas level ideal`;
       }
     }
 
@@ -169,16 +184,16 @@ export class TechnicalScoringService {
       const histRising = lastMacd.histogram > prevMacd.histogram;
       if (histPositive && histRising) {
         macdScore = 1.0;
-        macdLabel = `MACD histogram +${lastMacd.histogram.toFixed(2)} & naik — Tren bullish kuat`;
+        macdLabel = `MACD histogram +${lastMacd.histogram.toFixed(2)} & naik - Tren bullish kuat`;
       } else if (histPositive) {
         macdScore = 0.5;
-        macdLabel = `MACD histogram positif tapi turun — Momentum melambat`;
+        macdLabel = `MACD histogram positif tapi turun - Momentum melambat`;
       } else if (histRising) {
         macdScore = 0.5;
-        macdLabel = `MACD histogram negatif tapi naik — Potensi reversal`;
+        macdLabel = `MACD histogram negatif tapi naik - Potensi reversal`;
       } else {
         macdScore = 0;
-        macdLabel = `MACD histogram ${lastMacd.histogram.toFixed(2)} & turun — Bearish`;
+        macdLabel = `MACD histogram ${lastMacd.histogram.toFixed(2)} & turun - Bearish`;
       }
     }
 
@@ -199,19 +214,19 @@ export class TechnicalScoringService {
         const pctBPct = (pctB * 100).toFixed(0);
         if (pctB <= 0.2) {
           bbScore = 1.0;
-          bbLabel = `%B ${pctBPct}% — Harga di dekat lower band, oversold BB`;
+          bbLabel = `%B ${pctBPct}% - Harga di dekat lower band, oversold BB`;
         } else if (pctB <= 0.4) {
           bbScore = 0.75;
-          bbLabel = `%B ${pctBPct}% — Harga di bawah tengah BB`;
+          bbLabel = `%B ${pctBPct}% - Harga di bawah tengah BB`;
         } else if (pctB <= 0.6) {
           bbScore = 0.5;
-          bbLabel = `%B ${pctBPct}% — Harga di tengah BB`;
+          bbLabel = `%B ${pctBPct}% - Harga di tengah BB`;
         } else if (pctB <= 0.8) {
           bbScore = 0.25;
-          bbLabel = `%B ${pctBPct}% — Harga di atas tengah BB`;
+          bbLabel = `%B ${pctBPct}% - Harga di atas tengah BB`;
         } else {
           bbScore = 0;
-          bbLabel = `%B ${pctBPct}% — Harga di dekat upper band, overbought BB`;
+          bbLabel = `%B ${pctBPct}% - Harga di dekat upper band, overbought BB`;
         }
       }
     }
@@ -222,21 +237,24 @@ export class TechnicalScoringService {
     const ema20 = ema20Values[ema20Values.length - 1] ?? null;
     const ema50 = ema50Values[ema50Values.length - 1] ?? null;
     let trendScore = 0;
-    let trendLabel = "Tren — tidak ada sinyal";
+    let trendLabel = "Tren - tidak ada sinyal";
     if (ema20 && ema50 && lastClose > ema20 && ema20 > ema50) {
       if (lastVolume > avgVolume) {
         trendScore = 1.0;
         trendLabel =
-          "Harga > EMA20 > EMA50 dengan volume naik — Tren bullish kuat";
+          "Harga > EMA20 > EMA50 dengan volume naik - Tren bullish kuat";
       } else {
         trendScore = 0.75;
-        trendLabel = "Harga > EMA20 > EMA50, volume normal — Tren bullish";
+        trendLabel = "Harga > EMA20 > EMA50, volume normal - Tren bullish";
       }
+    } else if (ema20 && ema50 && lastClose > ema20 && ema20 <= ema50) {
+      trendScore = 0.55;
+      trendLabel = "Harga kembali di atas EMA20 - Fase recovery awal";
     } else if (ema20 && ema50 && lastClose > ema50) {
       trendScore = 0.4;
-      trendLabel = "Harga > EMA50 tapi di bawah EMA20 — Tren lemah/sideways";
+      trendLabel = "Harga > EMA50 tapi di bawah EMA20 - Tren lemah/sideways";
     } else {
-      trendLabel = "Harga di bawah EMA50 — Tren bearish";
+      trendLabel = "Harga di bawah EMA50 - Tren bearish";
     }
 
     // --- OBV Accumulation Signal: weight 25% ---
@@ -270,22 +288,22 @@ export class TechnicalScoringService {
     let accumulationLabel = "";
     if (normSlope5 > 0.1 && normSlope20 > 0.05) {
       accumulationScore = 1.0;
-      accumulationLabel = `OBV naik (jangka pendek +${(normSlope5 * 100).toFixed(0)}%, panjang +${(normSlope20 * 100).toFixed(0)}%) — Akumulasi kuat oleh pemain besar`;
+      accumulationLabel = `OBV naik (jangka pendek +${(normSlope5 * 100).toFixed(0)}%, panjang +${(normSlope20 * 100).toFixed(0)}%) - Akumulasi kuat oleh pemain besar`;
     } else if (normSlope5 > 0.05) {
       accumulationScore = 0.75;
-      accumulationLabel = `OBV mulai naik — Potensi akumulasi, perhatikan konfirmasi`;
+      accumulationLabel = `OBV mulai naik - Potensi akumulasi, perhatikan konfirmasi`;
     } else if (consolidation && normSlope5 >= -0.05) {
       accumulationScore = 0.6;
-      accumulationLabel = `Harga konsolidasi ketat (ATR ${atrPct != null ? (atrPct * 100).toFixed(1) : "–"}%) dengan OBV stabil — Harga dijaga, siap bergerak`;
+      accumulationLabel = `Harga konsolidasi ketat (ATR ${atrPct != null ? (atrPct * 100).toFixed(1) : "-"}%) dengan OBV stabil - Harga dijaga, siap bergerak`;
     } else if (normSlope5 < -0.1 && normSlope20 < -0.05) {
       accumulationScore = 0.0;
-      accumulationLabel = `OBV turun konsisten — Distribusi, pemain besar keluar`;
+      accumulationLabel = `OBV turun konsisten - Distribusi, pemain besar keluar`;
     } else if (normSlope5 < -0.05) {
       accumulationScore = 0.25;
-      accumulationLabel = `OBV melemah — Tekanan jual, waspadai distribusi`;
+      accumulationLabel = `OBV melemah - Tekanan jual, waspadai distribusi`;
     } else {
       accumulationScore = 0.4;
-      accumulationLabel = `OBV netral — Tidak ada sinyal akumulasi/distribusi jelas`;
+      accumulationLabel = `OBV netral - Tidak ada sinyal akumulasi/distribusi jelas`;
     }
 
     // --- ADX(14): used as multiplier for trend clarity ---
@@ -295,21 +313,64 @@ export class TechnicalScoringService {
       low: lows,
       period: 14,
     });
-    const adxData = adxValues[adxValues.length - 1];
-    const adx = (adxData as any)?.adx ?? null;
+    const adxData = adxValues[adxValues.length - 1] as
+      | { adx?: number }
+      | undefined;
+    const adx = adxData?.adx ?? null;
 
-    // Weighted sum: RSI 15% + Stoch 15% + MACD 15% + BB 10% + EMA Trend 20% + OBV 25%
+    const recent20High = Math.max(...bars.slice(-20).map((b) => b.high));
+    const prior20High = Math.max(...bars.slice(-21, -1).map((b) => b.high));
+    const nearHigh = recent20High > 0 ? lastClose / recent20High : 0;
+    const volumeExpansion = avgVolume > 0 ? lastVolume / avgVolume : 0;
+    let breakoutScore = 0;
+    let breakoutLabel = "Breakout - tidak ada sinyal";
+    if (lastClose >= prior20High && volumeExpansion >= 1.2) {
+      breakoutScore = 1.0;
+      breakoutLabel = `Breakout 20 hari dengan volume ${volumeExpansion.toFixed(1)}x rata-rata - Sinyal momentum kuat`;
+    } else if (nearHigh >= 0.97 && volumeExpansion >= 0.9) {
+      breakoutScore = 0.75;
+      breakoutLabel = `Harga dekat high 20 hari (${(nearHigh * 100).toFixed(0)}%) - Momentum masih hidup`;
+    } else if (nearHigh >= 0.92) {
+      breakoutScore = 0.45;
+      breakoutLabel = `Harga mulai mendekati resistance 20 hari - Perlu konfirmasi`;
+    } else {
+      breakoutScore = 0.15;
+      breakoutLabel = "Belum dekat area breakout";
+    }
+
+    let liquidityScore = 0;
+    let liquidityLabel = "Likuiditas - tidak memadai";
+    if (avgTurnover20 >= 20_000_000_000) {
+      liquidityScore = 1.0;
+      liquidityLabel = `Rata-rata transaksi 20H Rp${(avgTurnover20 / 1_000_000_000).toFixed(1)}M - Sangat likuid`;
+    } else if (avgTurnover20 >= 5_000_000_000) {
+      liquidityScore = 0.8;
+      liquidityLabel = `Rata-rata transaksi 20H Rp${(avgTurnover20 / 1_000_000_000).toFixed(1)}M - Likuid`;
+    } else if (avgTurnover20 >= 1_000_000_000) {
+      liquidityScore = 0.55;
+      liquidityLabel = `Rata-rata transaksi 20H Rp${(avgTurnover20 / 1_000_000_000).toFixed(1)}M - Cukup, gunakan size kecil`;
+    } else if (avgTurnover20 >= 250_000_000) {
+      liquidityScore = 0.25;
+      liquidityLabel = `Rata-rata transaksi 20H Rp${(avgTurnover20 / 1_000_000).toFixed(0)}jt - Tipis`;
+    }
+
+    // Weighted sum for Indonesia: trend, accumulation, liquidity, and breakout
+    // matter more than pure oversold signals in many IDX momentum rotations.
     let raw =
-      0.15 * rsiScore +
-      0.15 * stochScore +
-      0.15 * macdScore +
-      0.1 * bbScore +
-      0.2 * trendScore +
-      0.25 * accumulationScore;
+      0.1 * rsiScore +
+      0.08 * stochScore +
+      0.14 * macdScore +
+      0.08 * bbScore +
+      0.22 * trendScore +
+      0.18 * accumulationScore +
+      0.12 * breakoutScore +
+      0.08 * liquidityScore;
 
-    // ADX multiplier: choppy market (< 15) lowers conviction
+    // ADX multiplier: choppy markets lower conviction; clear trends get a small boost.
     if (adx !== null && adx < 15) {
-      raw *= 0.85;
+      raw *= 0.9;
+    } else if (adx !== null && adx >= 22 && trendScore >= 0.75) {
+      raw *= 1.05;
     }
 
     return {
@@ -340,6 +401,11 @@ export class TechnicalScoringService {
         adx,
         consolidation,
         atrPct,
+        breakoutScore,
+        breakoutLabel,
+        liquidityScore,
+        liquidityLabel,
+        avgTurnover20,
       },
     };
   }

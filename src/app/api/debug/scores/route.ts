@@ -6,10 +6,10 @@ import {
   SectorMedians,
   median,
 } from "../../../../core/domain/services/FundamentalScoringService";
+import { BUY_THRESHOLD } from "../../../../core/domain/services/DecisionService";
 import { Ticker } from "../../../../core/domain/value-objects/Ticker";
-import { IDX80_TICKERS } from "../../../../lib/constants/idx80";
+import { parseTickerUniverse } from "../../../../lib/constants/idx-universe";
 
-const BUY_THRESHOLD = 0.68; // matches DecisionService threshold
 const BATCH_SIZE = 10;
 const BATCH_DELAY_MS = 1000;
 
@@ -21,8 +21,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   const { searchParams } = new URL(request.url);
-  const topN = Math.min(Number(searchParams.get("top") ?? "20"), 80);
+  const topN = Math.min(Number(searchParams.get("top") ?? "20"), 200);
   const singleTicker = searchParams.get("ticker")?.toUpperCase();
+  const universeParam = searchParams.get("tickers") ?? undefined;
 
   const provider = new YahooFinanceAdapter();
   const technicalScorer = new TechnicalScoringService();
@@ -30,7 +31,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   const tickerList = singleTicker
     ? [new Ticker(singleTicker)]
-    : IDX80_TICKERS.map((t) => new Ticker(t));
+    : parseTickerUniverse(universeParam ?? process.env.IDX_TICKERS).map(
+        (t) => new Ticker(t),
+      );
 
   const fetchedAt = new Date().toISOString();
 
@@ -139,7 +142,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       bars,
     );
     const estimated =
-      0.4 * techResult.score.number + 0.4 * fundResult.score.number + 0.2 * 0.5; // sentiment assumed neutral
+      0.5 * techResult.score.number + 0.4 * fundResult.score.number + 0.1 * 0.5; // sentiment assumed neutral
 
     const lastBar = bars[bars.length - 1] ?? null;
     const lastBarDate = lastBar
@@ -177,7 +180,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   return NextResponse.json({
     fetchedAt,
     latestDataDate,
-    note: "Sentimen diasumsikan netral (0.5). Agregat aktual mungkin berbeda ±0.2",
+    note: "Sentimen diasumsikan netral (0.5). Agregat aktual mungkin berbeda +/-0.1",
     threshold: BUY_THRESHOLD,
     totalScored: results.length,
     candidatesAboveThreshold: candidates.length,
